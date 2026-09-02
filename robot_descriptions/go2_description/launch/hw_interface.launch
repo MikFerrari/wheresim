@@ -1,0 +1,31 @@
+<?xml version="1.0" ?>
+<launch>
+        	<arg name="rviz_conf" default="$(find go2_description)/rviz/conf_hw.rviz"/>
+	<arg name="spawn_x" default="0.0" />
+	<arg name="spawn_y" default="0.0" />
+	<arg name="spawn_z" default="2.0" />
+	<arg name="task_period" default="0.001" />
+	
+	<param name="task_period"  value="$(arg task_period)" />
+	
+	<!-- send hyq urdf to param server and spawn it -->
+	<include file="$(find go2_description)/launch/upload.launch">	</include>
+
+	<node name="robot_hardware_interface" pkg="go2_hardware_interface" type="ros_control_node" respawn="false" output="screen"/>
+	
+	 <rosparam file="$(find ros_impedance_controller)/config/joint_state_publisher.yaml" ns="/go2" command="load"/>
+		
+	<!-- 3 Loading the controllers into the controller manager -->
+	<node name="ros_impedance_controller" pkg="controller_manager" type="spawner" respawn="false" output="screen" ns="/go2" args="joint_state_publisher"/>
+
+
+<!-- 4- load robot_state_publisher: converts joint states to TF transforms, it is just for rviz, etc -->
+	<node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" respawn="false" output="screen">
+	<remap from="/joint_states" to="/go2/joint_states"/> 
+	</node>
+	
+	
+    <!-- 5 run rviz -->
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_conf) -f world" />
+</launch>
+

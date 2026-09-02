@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<launch>
+	<arg name="robot_name" default="go2" />
+        <arg name="sensors" default="true"/>
+        <arg name="task_period" default="0.004"/>
+
+        <!-- send robot urdf to param server -->
+        <arg name="find_robot_description" value="$(eval find(robot_name+'_description'))"/>
+        <param name="robot_description" command="$(find xacro)/xacro --inorder '$(arg find_robot_description)/robots/$(arg robot_name).urdf.xacro' 
+    	 task_period:=$(arg task_period)"/>      
+	
+
+        <!-- send robot semantic description srdf to param server -->
+        <param name="robot_semantic_description" command="$(find xacro)/xacro --inorder '$(arg find_robot_description)/robots/$(arg robot_name).srdf.xacro'" />
+        
+        <!-- spawn model -->
+        <node name="spawn_$(arg robot_name)" pkg="gazebo_ros" type="spawn_model" output="screen"
+        args="-urdf -param robot_description -model $(arg robot_name) -x 0 -y 0 -z 1"/>
+
+</launch>
+
