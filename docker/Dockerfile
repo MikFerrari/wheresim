@@ -132,7 +132,29 @@ RUN python3 -m pip install --upgrade pip setuptools wheel && \
 RUN pip3 install line_profiler
 
 
+#TSID
 
+RUN apt-get update && apt-get install -y  ros-noetic-tsid
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential \
+      python3-dev \
+      pkg-config \
+      libxml2-dev \
+      libxslt1-dev \
+      zlib1g-dev \
+      python3-numpy \
+      python3-scipy \
+ && python3 -m pip install --no-cache-dir \
+      matplotlib \
+      casadi \
+      adam-robotics \
+      liecasadi \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir   robot_descriptions
+ 
 
 # -----------------------------
 # Patch roslaunch to reduce shutdown timeout
