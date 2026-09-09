@@ -153,8 +153,16 @@ RUN apt-get update \
       liecasadi \
  && rm -rf /var/lib/apt/lists/*
 
+#Caron
 RUN pip3 install --no-cache-dir   robot_descriptions
  
+
+#notebook
+RUN python3 -m pip install --no-cache-dir \
+      notebook \
+      ipywidgets \
+ && rm -rf /var/lib/apt/lists/*
+
 
 # -----------------------------
 # Patch roslaunch to reduce shutdown timeout
