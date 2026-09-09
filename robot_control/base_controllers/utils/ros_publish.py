@@ -36,6 +36,11 @@ class RosPub():
         #init ros node to publish joint states and vis topics
         ros.init_node('sub_pub_node_python', anonymous=False, log_level=ros.FATAL)
 
+
+
+
+
+
         self.markers_time_to_live = markers_time_to_live
         self.marker_pub = ros.Publisher('/vis' , MarkerArray, queue_size=1)
         self.arrow_pub = ros.Publisher('/arrow', MarkerArray, queue_size=1)

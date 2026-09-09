@@ -44,8 +44,6 @@ u = Utils()
 # globals
 labels_ur = ["1 - Shoulder Pan", "2 - Shoulder Lift", "3 - Elbow", "4 - Wrist 1", "5 - Wrist 2", "6 - Wrist 3"]
 labels_quadruped = ["LF_HAA", "LF_HFE","LF_KFE","LH_HAA", "LH_HFE","LH_KFE","RF_HAA", "RF_HFE","RF_KFE","RH_HAA", "RH_HFE","RH_KFE"]
-labels_flywheel2 = labels_quadruped + ["left_wheel", "right_wheel"]
-labels_flywheel4 = labels_quadruped + ["back_wheel", "front_wheel", "left_wheel", "right_wheel"]
 
 class Twist:
     linear = np.empty((3))*np.nan
@@ -429,87 +427,22 @@ def getRobotModelFloating(robot_name="hyq"):
             urdf = ros.get_param('/' + robot_name +'/robot_description')
             print(urdf)
         print("URDF generated_commons")
-        os.makedirs(path + "/robot_urdf/generated_urdf/", exist_ok=True)
-        urdf_location = path + "/robot_urdf/generated_urdf/" + robot_name + ".urdf"
-        print(urdf_location)
+        os.makedirs(path + "/robot_urdf/", exist_ok=True)
+        urdf_location = path + "/robot_urdf/" + robot_name + ".urdf"
+
         text_file = open(urdf_location, "w")
         text_file.write(urdf)
         text_file.close()
         robot = RobotWrapper.BuildFromURDF(urdf_location, root_joint=pinocchio.JointModelFreeFlyer())
     else: #this is used when you run stuff online (i.e. unit tests)
         try:
-            urdf_location = path + "/robot_urdf/generated_urdf/" + robot_name + ".urdf"
+            urdf_location = path + "/robot_urdf/" + robot_name + ".urdf"
             robot = RobotWrapper.BuildFromURDF(urdf_location, root_joint=pinocchio.JointModelFreeFlyer())
         except:
-            print('you are running offline, urdf is not present in robot_urdf/generated_urdf folder')
+            print('you are running offline, urdf is not present in robot_urdf/ folder')
 
     return robot
 
-
-def getRobotModel(robot_name="hyq", generate_urdf=False, xacro_path=None, additional_urdf_args=None):
-    ERROR_MSG = 'You should set the environment variable LOCOSIM_DIR"\n'
-    path = os.environ.get('LOCOSIM_DIR', ERROR_MSG)
-    srdf = path + "/robot_urdf/" + robot_name + ".srdf"
-
-    if (generate_urdf):
-        try:
-            # old way
-            if (xacro_path is None):
-                xacro_path = rospkg.RosPack().get_path(
-                    robot_name + '_description') + '/robots/' + robot_name + '.urdf.xacro'
-
-            package = 'xacro'
-            executable = 'xacro'
-            name = 'xacro'
-            namespace = '/'
-            # with gazebo 11 you should set in the ros_impedance_controllerXX.launch the new_gazebo_version = true
-            # note we generate the urdf with the floating base joint (new gazebo version should be false by default in the xacro of the robot! because Pinocchio needs it!
-            args = xacro_path + ' --inorder -o ' + os.environ[
-                'LOCOSIM_DIR'] + '/robot_urdf/generated_urdf/' + robot_name + '.urdf'
-
-            try:
-                flywheel = ros.get_param('/flywheel4')
-                args += ' flywheel4:=' + flywheel
-            except:
-                pass
-
-            try:
-                flywheel2 = ros.get_param('/flywheel2')
-                args += ' flywheel2:=' + flywheel2
-            except:
-                pass
-
-            try:
-                angle = ros.get_param('/angle_deg')
-                args += ' angle_deg:=' + angle
-            except:
-                pass
-
-            try:
-                anchorZ = ros.get_param('/anchorZ')
-                args += ' anchorZ:=' + anchorZ
-            except:
-                pass
-
-            if additional_urdf_args is not None:
-                args += ' ' + additional_urdf_args
-
-            os.system("rosrun xacro xacro " + args)
-            # os.system("rosparam get /robot_description > "+os.environ['LOCOSIM_DIR']+'/robot_urdf/'+robot_name+'.urdf')
-            # urdf = URDF.from_parameter_server()
-            print("URDF generated_commons")
-            urdf_location = path + "/robot_urdf/generated_urdf/" + robot_name + ".urdf"
-            print(urdf_location)
-            robot = RobotWrapper.BuildFromURDF(urdf_location)
-            print("URDF loaded in Pinocchio")
-        except:
-            print('Issues in URDF generation for Pinocchio, did not succeed')
-    else:
-
-        urdf = path + "/robot_urdf/" + robot_name + ".urdf"
-        robot = RobotWrapper.BuildFromURDF(urdf, [path, srdf])
-
-    return robot
 
 def getRobotModel(robot_name="hyq", generate_urdf = False, xacro_path = None, additional_urdf_args = None, floating_base=False):
     ERROR_MSG = 'You should set the environment variable LOCOSIM_DIR"\n';
@@ -526,45 +459,15 @@ def getRobotModel(robot_name="hyq", generate_urdf = False, xacro_path = None, ad
             executable = 'xacro'
             name = 'xacro'
             namespace = '/'
-            # with gazebo 11 you should set in the ros_impedance_controllerXX.launch the new_gazebo_version = true
             # note we generate the urdf with the floating base joint (new gazebo version should be false by default in the xacro of the robot! because Pinocchio needs it!
-            args = xacro_path+ ' --inorder -o '+os.environ['LOCOSIM_DIR']+'/robot_urdf/generated_urdf/'+robot_name+'.urdf'
+            args = xacro_path+ '   -o '+os.environ['LOCOSIM_DIR']+'/robot_urdf/'+robot_name+'.urdf'
      
-     
-       
-            try:
-                flywheel = ros.get_param('/flywheel4')
-                args+=' flywheel4:='+flywheel
-            except:
-                pass
-
-            try:
-                flywheel2 = ros.get_param('/flywheel2')
-                args += ' flywheel2:=' + flywheel2
-            except:
-                pass
-
-            try:
-                angle = ros.get_param('/angle_deg')
-                args += ' angle_deg:=' + angle
-            except:
-                pass
-
-            try:
-                anchorZ = ros.get_param('/anchorZ')
-                args += ' anchorZ:=' + anchorZ
-            except:
-                pass
-
-            if additional_urdf_args is not None:
-                args += ' '+additional_urdf_args
-            
-            os.system("rosrun xacro xacro "+args)  
+            os.system("rosrun xacro xacro "+args)
             #os.system("rosparam get /robot_description > "+os.environ['LOCOSIM_DIR']+'/robot_urdf/'+robot_name+'.urdf')  
             #urdf = URDF.from_parameter_server()
             print("URDF generated_commons")
-            urdf_location      = path + "/robot_urdf/generated_urdf/" + robot_name+ ".urdf"
-            print(urdf_location)
+            urdf_location      = path + "/robot_urdf/" + robot_name+ ".urdf"
+
             if floating_base:
                 robot = RobotWrapper.BuildFromURDF(urdf_location, root_joint=pinocchio.JointModelFreeFlyer())
             else:
@@ -745,10 +648,6 @@ def plotJoint(name, time_log, q_log=None, q_des_log=None, qd_log=None, qd_des_lo
             labels = labels_ur
         if njoints == 12:
             labels = labels_quadruped
-        if njoints == 14:
-            labels = labels_flywheel2
-        if njoints == 16:
-            labels = labels_flywheel4
         subset_index = range(njoints)
     else:
         if subset_index is None:
@@ -828,39 +727,6 @@ def plotEndeff(name, figure_id, time_log, plot_var_log, plot_var_des_log = None)
     plt.grid()
 
 
-def plotAdmittanceTracking(figure_id, time_log, x_log, x_des_log, x_des_log_adm, f_log):
-
-    fig = plt.figure(figure_id)
-    fig.suptitle("admittance tracking", fontsize=20)
-    plt.subplot(4, 1, 1)
-    plt.ylabel("end-effector x")
-    plt.plot(time_log, x_log[0, :], lw=3, color='blue')
-    plt.plot(time_log, x_des_log[0, :], lw=2, color='red')
-    plt.plot(time_log, x_des_log_adm[0, :], lw=2, color='black')
-    plt.grid()
-
-    plt.subplot(4, 1, 2)
-    plt.ylabel("end-effector y")
-    plt.plot(time_log, x_log[1, :], lw=3, color='blue')
-    plt.plot(time_log, x_des_log[1, :], lw=2, color='red')
-    plt.plot(time_log, x_des_log_adm[1, :], lw=2, color='black')
-    plt.grid()
-
-    plt.subplot(4, 1, 3)
-    plt.ylabel("end-effector z")
-    plt.plot(time_log, x_log[2, :], lw=3, color='blue')
-    plt.plot(time_log, x_des_log[2, :], lw=2, color='red')
-    plt.plot(time_log, x_des_log_adm[2, :], lw=2, color='black')
-    plt.grid()
-
-    f_norm = []
-    for i in range(f_log.shape[1]):
-        f_norm.append(np.linalg.norm(f_log[:,i]))
-
-    plt.subplot(4, 1, 4)
-    plt.plot(time_log, f_norm, lw=2, color='blue')
-    plt.ylabel("norm of ee force")
-    plt.grid()
 
 def plotFrame(name, time_log, des_Pose_log=None, Pose_log=None, des_Twist_log=None, Twist_log=None, des_Acc_log=None, Acc_log=None,
               des_Wrench_log=None, Wrench_log=None, title=None, frame=None, sharex=False, sharey=False, start=0, end=-1):
@@ -1488,17 +1354,6 @@ def plotContacts(name, time_log, des_LinPose_log=None, LinPose_log=None, des_Lin
         ax1.plot(time_log[start:end], gt_Forces_log[3*idx + 2, start:end], linestyle='-', lw=lw_act, color='green')
     ax1.grid()
 
-    
-
-    # axes = fig.axes
-    # for i in range(6):
-    #     yticks = axes[i].get_yticks()
-    #     ymin = min(-0.01, min(yticks))
-    #     ymax = max(0.01, max(yticks))
-    #     axes[i].set_ylim([ymin, ymax])
-    #     yticks = axes[i].get_yticks()
-    #     axes[i].set_yticks(np.unique(np.around(yticks, 2)))
-
 
     fig.align_ylabels(fig.axes[0:12:4])
     fig.align_ylabels(fig.axes[1:12:4])
@@ -1518,102 +1373,6 @@ def plotConstraitViolation(figure_id,constr_viol_log):
     plt.legend(bbox_to_anchor=(0., 1.02, 1., .102), loc=3, ncol=2, mode="expand", borderaxespad=0.)
     plt.ylabel("Constr violation", fontsize=10)
     plt.grid()                                                                     
-
-def plotEndeffImpedance(name, figure_id, x_log, x_des_log, f_log):                  
-    
-    title=""    
-    
-    if name == 'position':
-        title="Force vs Displacement" 
-    elif name == 'velocity':
-        title="Force vs Velocity" 
-    elif name == 'acceleration':
-        title="Force vs Acceleration"                           
-    else:
-        print("wrong choice in impedance plotting")
- 
-    lw_act=4  
-    lw_des=7
-                    
-#    fig = plt.figure(figure_id)    
-    fig, axs = plt.subplots(3, 3)
-    fig.suptitle(title, fontsize=20)
-    
-    axs[0, 0].plot((x_log[0,:].T-x_des_log[0,:].T), f_log[0,:].T, lw=lw_act, color = 'blue')
-    axs[0, 0].set_title('Fx vs X')
-    axs[0, 0].grid()
-    
-    axs[0, 1].plot((x_log[1,:].T-x_des_log[1,:].T), f_log[0,:].T, lw=lw_act, color = 'blue')
-    axs[0, 1].set_title('Fx vs Y')
-    axs[0, 1].grid()
-    
-    axs[0, 2].plot((x_log[2,:].T-x_des_log[2,:].T), f_log[0,:].T, lw=lw_act, color = 'blue')
-    axs[0, 2].set_title('Fx vs Z')
-    axs[0, 2].grid()
-    
-    axs[1, 0].plot((x_log[0,:].T-x_des_log[0,:].T), f_log[1,:].T, lw=lw_act, color = 'blue')
-    axs[1, 0].set_title('Fy vs X')
-    axs[1, 0].grid()
-    
-    axs[1, 1].plot((x_log[1,:].T-x_des_log[1,:].T), f_log[1,:].T, lw=lw_act, color = 'blue')
-    axs[1, 1].set_title('Fy vs Y')
-    axs[1, 1].grid()
-    
-    axs[1, 2].plot((x_log[2,:].T-x_des_log[2,:].T), f_log[1,:].T, lw=lw_act, color = 'blue')
-    axs[1, 2].set_title('Fy vs Z')
-    axs[1, 2].grid()
-    
-    axs[2, 0].plot((x_log[0,:].T-x_des_log[0,:].T), f_log[2,:].T, lw=lw_act, color = 'blue')
-    axs[2, 0].set_title('Fz vs X')
-    axs[2, 0].grid()
-    
-    axs[2, 1].plot((x_log[1,:].T-x_des_log[1,:].T), f_log[2,:].T, lw=lw_act, color = 'blue')
-    axs[2, 1].set_title('Fz vs Y')
-    axs[2, 1].grid()
-    
-    axs[2, 2].plot((x_log[2,:].T-x_des_log[2,:].T), f_log[2,:].T, lw=lw_act, color = 'blue')
-    axs[2, 2].set_title('Fz vs Z')
-    axs[2, 2].grid()
-
-    return fig
-    
-def plotJointImpedance(name, q_log, q_des_log, tau_log):
-    
-    title=""
-    
-    if name == 'position':
-        title="Torque vs Angular Displacement"      
-    elif name == 'velocity':
-        title="Torue vs Angular Velocity" 
-    elif name == 'acceleration':
-        title="Torque vs Angular Acceleration"                           
-    else:
-        print("wrong choice in impedance plotting")
- 
-    lw_act=4  
-    lw_des=3
-
-    #Number of joints
-    njoints = q_log.shape[0]                                                            
-    
-    #neet to transpose the matrix other wise it cannot be plot with numpy array    
-    fig = plt.figure()                
-    fig.suptitle(name, fontsize=20)             
-    labels_ur = ["1 - Shoulder Pan", "2 - Shoulder Lift","3 - Elbow","4 - Wrist 1","5 - Wrist 2","6 - Wrist 3"]
-    labels_hyq = ["LF_HAA", "LF_HFE","LF_KFE","RF_HAA", "RF_HFE","RF_KFE","LH_HAA", "LH_HFE","LH_KFE","RH_HAA", "RH_HFE","RH_KFE"]
-
-    if njoints == 6:
-        labels = labels_ur         
-    if njoints == 12:
-        labels = labels_hyq                  
-                
-    
-    for jidx in range(njoints):
-                
-        plt.subplot(njoints/2,2,jidx+1)
-        plt.ylabel(labels[jidx])    
-        plt.plot(q_log[jidx,:].T-q_des_log[jidx,:].T, tau_log[jidx,:].T, linestyle='-', lw=lw_des,color = 'blue')
-        plt.grid()
 
 
 def polar_chart(name, figure_id, phase_deg, mag_solid, mag_dashed, legend = None):
