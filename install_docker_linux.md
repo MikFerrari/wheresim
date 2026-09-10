@@ -48,8 +48,8 @@ $ gedit ~/.bashrc
 
 ```bash
 alias lab_wheresim='xhost +local:root; \
-docker rm -f docker_container >/dev/null 2>&1 || true; \
-docker run --name docker_container --gpus all \
+docker rm -f where_container >/dev/null 2>&1 || true; \
+docker run --name where_container --gpus all \
 --workdir="/root" \
 --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
 --device=/dev/dri:/dev/dri \
@@ -59,7 +59,7 @@ docker run --name docker_container --gpus all \
 --privileged --shm-size 2g --rm \
 --volume $HOME/trento_lab_home:/root \
 mfocchi/trento_lab_framework:wheresim'
-alias dock-other='docker exec -it docker_container /bin/bash'
+alias where-other='docker exec -it where_container /bin/bash'
 ```
 
 - Load the .bashrc script (next time you will open a terminal this will be automatically loaded).
