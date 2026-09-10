@@ -14,6 +14,7 @@ from termcolor import colored
 import base_controllers.params as conf
 from scipy.io import savemat
 from datetime import datetime, timezone
+import time
 #gazebo messages
 from gazebo_ros import gazebo_interface
 from gazebo_msgs.msg import ContactsState
@@ -26,7 +27,9 @@ from base_controllers.components.imu_utils import IMU_utils
 from base_controllers.components.quadruped_tasks import QuadrupedTasks
 from base_controllers.components.state_machine import StateMachine
 from base_controllers.utils.rosbag_recorder import RosbagControlledRecorder
-
+from optimization.srb_footstep_ocp import  SrbFootstepOcp
+from optimization.lipm_to_whole_body import compute_foot_traj, interpolate_lipm_traj
+import optimization.aliengo_conf as com_optim_conf
 
 class QuadrupedController(BaseController):
     def __init__(self, robot_name="hyq", launch_file=None):
@@ -168,10 +171,11 @@ class QuadrupedController(BaseController):
 
         self.basePoseW_des = np.zeros(6) * np.nan
         self.baseTwistW_des = np.zeros(6) * np.nan
-
+        self.baseAccW_des = np.zeros(6) * np.nan
 
         self.comPoseW_des = np.zeros(6) * np.nan
         self.comTwistW_des = np.zeros(6) * np.nan
+        self.comAccW_des = np.zeros(6) * np.nan
 
         self.comPosB = np.zeros(3) * np.nan
         self.comVelB = np.zeros(3) * np.nan
@@ -1038,16 +1042,98 @@ class QuadrupedController(BaseController):
             self.pid.setPDjoints(self.alphaCollapse * self.kp_act, self.alphaCollapse * self.kd_act, self.alphaCollapse * self.ki_act)
             return False
 
+    def getCoMReference(self, com_conf,robot_height):
+        hip_joint_names = {"FL": "lf_haa_joint", "FR": "rf_haa_joint", "RL": "lh_haa_joint", "RR": "rh_haa_joint"}
+        hip_joint_ids, hip_pos = {}, {}
+        for k in hip_joint_names.keys():
+            hip_joint_ids[k] = self.robot.model.getJointId(hip_joint_names[k])
+            hip_pos[k] = self.robot.placement(self.neutral_fb_jointstate, hip_joint_ids[k]).translation[:2]
+
+        # MPC Parameters:
+        nb_dt_per_step = int(round(com_conf.T_step / com_conf.dt_mpc))
+        N = com_conf.nb_steps * nb_dt_per_step  # number of desired walking intervals
+
+        # CoM initial state:
+        x_0 = np.array([0.0, 0.0, 0.0, 0.0])
+        p_0 = np.concatenate([hip_pos["FL"], hip_pos["RR"]])
+
+        # compute Com reference trajectories:
+        C_ref = np.zeros((2, N + 1))  # not used
+        DC_ref = np.tile(com_conf.step_length / com_conf.T_step, N + 1)
+        DC_ref = np.vstack([DC_ref, np.zeros(N + 1)])
+        gait_pattern = []
+        while (len(gait_pattern) < N + 1):
+            gait_pattern += nb_dt_per_step * [["FL", "RR"]]
+            gait_pattern += nb_dt_per_step * [["FR", "RL"]]
+
+        ocp = SrbFootstepOcp(com_conf.dt_mpc, N, robot_height)
+
+
+        start = time.time()
+        sol = ocp.solve(x_0, p_0, com_conf.wc, com_conf.wdc, com_conf.wu, com_conf.wp, C_ref, DC_ref, hip_pos, gait_pattern)
+        print("Computation time", time.time() - start)
+
+        com_state, u, p = sol.value(ocp.x), sol.value(ocp.u), sol.value(ocp.p)
+        foot_steps, cop, hip_pos_0, hip_pos_1 = np.zeros((4, N)), np.zeros((2, N)), np.zeros((2, N)), np.zeros((2, N))
+        j = 0
+        for i in range(N):
+            if (i > 0 and gait_pattern[i][0] != gait_pattern[i - 1][0]):
+                j += 1
+            foot_steps[:, i] = sol.value(ocp.p[:, j])
+            cop[:, i] = foot_steps[:2, i] + u[i] * (foot_steps[2:, i] - foot_steps[:2, i])
+            hip_pos_0[:, i] = com_state[:2, i] + hip_pos[gait_pattern[i][0]]
+            hip_pos_1[:, i] = com_state[:2, i] + hip_pos[gait_pattern[i][1]]
+
+        return com_state, foot_steps, cop,  gait_pattern
+
+    def generateInterpolatedReference(self, com_conf, com_state, foot_steps, cop, gait_pattern, robot_height):
+        # INTERPOLATE WITH TIME STEP OF CONTROLLER
+        dt_ctrl = com_conf.dt  # time step used by controller
+        com_state_x = com_state[[0, 2], :]
+        com_state_y = com_state[[1, 3], :]
+        cop_x = cop[0, :]
+        cop_y = cop[1, :]
+        com, dcom, ddcom, cop, foot_steps_ctrl = interpolate_lipm_traj(
+            com_conf.T_step, com_conf.nb_steps, com_conf.dt_mpc, dt_ctrl,
+            robot_height, com_conf.g,
+            com_state_x, com_state_y, foot_steps, cop_x, cop_y)
+
+        # COMPUTE TRAJECTORIES FOR FEET
+        N = com_state.shape[1] - 1  # number of time steps for traj-opt
+        N_ctrl = int((N * com_conf.dt_mpc) / dt_ctrl)  # number of time steps for control
+        x, dx, ddx = {}, {}, {}
+        for foot_name in com_conf.foot_names:
+            if (foot_name in gait_pattern[0]):
+                shift = 0
+                initial_phase = "stance"
+                gp = gait_pattern[0]
+            else:
+                shift = 1
+                initial_phase = "swing"
+                i = 1
+                while (gait_pattern[i][0] == gait_pattern[i - 1][0]):
+                    i += 1
+                gp = gait_pattern[i]
+            if (foot_name == gp[0]):
+                indices = [0, 1]
+            else:
+                indices = [2, 3]
+
+            nb_dt_per_step = int(round(com_conf.T_step / com_conf.dt_mpc))
+            target_foot_steps = foot_steps[indices, shift::2*nb_dt_per_step]
+            x[foot_name], dx[foot_name], ddx[foot_name] = compute_foot_traj(target_foot_steps, N_ctrl, dt_ctrl, com_conf.T_step, com_conf.step_height, initial_phase)
+
+        return com,  dcom, ddcom, x, dx, ddx, cop
 
 if __name__ == '__main__':
     p = QuadrupedController('aliengo')
     world_name = 'fast.world'
     use_gui = False
-    p.state_estimation = 'odometry' # 'odometry',  'pronto', 'ground_truth' (only sim), 'mocap'
+    p.state_estimation = 'ground_truth' # 'odometry',  'pronto', 'ground_truth' (only sim), 'mocap'
     rl_control = 'none' #'none', 'sensor_based' (Giulio), 'state_est_based' (Riccardo)
     # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
     rl_use_nn_se = p.state_estimation != 'pronto'
-    use_joy = False
+    use_joy = True
     generate_reference = False
     p.SAVE_BAG = False  #
     if p.robot_name == 'go2':
@@ -1070,17 +1156,14 @@ if __name__ == '__main__':
                                            'rviz:=true',
                                            *(['task_period:=0.002'] if p.real_robot else [])]) #change task period to 500Hz instead of 1000Hz for real robot
         if p.SAVE_BAG:
-
-
             now = datetime.now()
             format_date = now.strftime("%Y-%m-%d-%H-%M-%S")
             p.recorder = RosbagControlledRecorder(
                 topics='/aliengo/joint_states /aliengo/trunk_imu /aliengo/ground_truth /rl_ref_vel /tf /tf_static',
                         bag_name="test_" + format_date + ".bag", record_from_startup_=False)
-
             p.recorder.start_recording_srv()
         if use_joy:
-            joy = JoyManager()
+            joy = JoyManager("js1")
         p.startupProcedure()
         if p.state_estimation=='pronto':
             launchFileNode("mocap_qualisys", "qualisys.launch")
@@ -1095,6 +1178,11 @@ if __name__ == '__main__':
             p.ref_gen = QuadrupedTasks(task='pushup', robot_conf=conf.robot_params[p.robot_name], gui=True, quadruped=p)
             p.ref_gen.startUp(p.time)
 
+        com_state, foot_steps, cop,  gait_pattern = p.getCoMReference(com_optim_conf, p.robot_height)
+        com_ref,  dcom_ref, ddcom_ref, x_ref, dx_ref, ddx_ref, cop_ref = p.generateInterpolatedReference(com_optim_conf, com_state, foot_steps, cop,   gait_pattern, p.robot_height)
+
+        counter = 0
+        p.pid.setPDs(0, 0,0 )
         #to reduce simulation frequency
         #p.setSimSpeed(dt_sim=0.001, max_update_rate=300, iters=1500)
         while not ros.is_shutdown():
@@ -1123,6 +1211,7 @@ if __name__ == '__main__':
                     p.deregister_node()
                     break
 
+            #p.applyForce(0, 100, 0, 0, 0, 0, 0.25)
 
             if rl_control != 'none' and (p.time > (p.startTime + 3.)):
                 if use_joy:
@@ -1168,13 +1257,40 @@ if __name__ == '__main__':
                 p.tau_ffwd = np.zeros(12)
                 p.send_command(p.rl_q_des, np.zeros(12), np.zeros(12), log_data_in_send_command=True)
             else:
+
+
+
+
                 if generate_reference:
                     p.q_des, p.qd_des, p.tau_ffwd, p.basePoseW_des, p.baseTwistW_des = p.ref_gen.generateReference(p.time)
                 else:
-                    p.tau_ffwd, p.grForcesW_des = p.wbc.gravityCompensationBase(p.B_contacts,
-                                                                                p.wJ,
-                                                                                p.h_joints,
-                                                                                p.comPoseW)
+                    # p.tau_ffwd, p.grForcesW_des = p.wbc.gravityCompensationBase(p.B_contacts,
+                    #                                                             p.wJ,
+                    #                                                             p.h_joints,
+                    #                                                             p.comPoseW)
+
+                    ####################
+                    # reference
+                    #########################
+                    print(p.basePoseW_des)
+                    p.basePoseW_des[:3] = com_ref[:, counter]
+                    p.baseTwistW_des[:3] = dcom_ref[:, counter]
+
+                    ####################
+                    # interpolation
+                    #########################
+
+                    ####################
+                    # i
+                    #########################
+
+                    tau_ffwd, p.grForcesW_des = p.wbc.computeWBC(p.W_contacts, p.wJ, p.h_joints, p.basePoseW, p.comPoseW, p.baseTwistW, p.comTwistW,
+                                                             p.basePoseW_des, p.baseTwistW_des, p.baseAccW_des, p.centroidalInertiaB,
+                                                             comControlled=True, type='projection', stance_legs=p.stance_legs)
+
+                counter += 1
+
+
                 p.send_command(p.q_des, p.qd_des, p.alphaCollapse*p.tau_ffwd, log_data_in_send_command=True)
 
             p.visualizeContacts()

@@ -17,14 +17,7 @@ from robot_descriptions._cache import clone_to_cache as _clone_to_cache
 # PACKAGE_PATH: str = _path.join(REPOSITORY_PATH, "robots")
 from pinocchio.robot_wrapper import RobotWrapper
 import pinocchio as pin
-robot = RobotWrapper.BuildFromURDF("aliengo.urdf", root_joint=pin.JointModelFreeFlyer())
-
 foot_names = ["FL", "FR", "RL", "RR"]
-hip_joint_names = {"FL": "FL_hip_joint", "FR": "FR_hip_joint", "RL": "RL_hip_joint", "RR": "RR_hip_joint"}
-hip_joint_ids, hip_pos = {}, {}
-for k in hip_joint_names.keys():
-    hip_joint_ids[k] = robot.model.getJointId(hip_joint_names[k]) 
-    hip_pos[k] = robot.placement(robot.q0, hip_joint_ids[k]).translation[:2]
 
 # configuration for LIPM trajectory optimization
 # ----------------------------------------------
