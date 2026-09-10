@@ -7,14 +7,16 @@ from base_controllers.utils.common_functions import checkRosMaster
 
 
 class JoyManager:
-    def __init__(self):
+    def __init__(self, joy_port="js1"):
         """
         Manages joystick input by subscribing to /joy.
         Always restarts the joy_node to ensure a fresh connection.
         """
+        self.joy_port = joy_port
         self.latest_msg = Joy()
         self.sub = rospy.Subscriber("/joy", Joy, self._joy_callback)
         self._restart_joy_node()
+
 
         rospy.loginfo("JoyManager initialized: subscribed to /joy")
 
@@ -26,13 +28,13 @@ class JoyManager:
 
         try:
             # Kill any old joy_node
-            subprocess.run(["rosnode", "kill", "/joy", "/joy_node"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["rosnode", "kill", "/joy"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass  # ignore if no node exists
 
         # Start a new joy_node
         try:
-            subprocess.Popen(["rosrun", "joy", "joy_node"])
+            subprocess.Popen(["rosrun", "joy", "joy_node","/joy_node",  "_dev:=/dev/input/"+self.joy_port])
             rospy.loginfo("Started new joy_node instance.")
         except Exception as e:
             rospy.logerr(f"Failed to start joy_node: {e}")
@@ -58,7 +60,7 @@ class JoyManager:
 
         try:
             # jessica joy
-            # Right stick (move lateral)
+            #Right stick (move lateral)
             rot_z = self.latest_msg.axes[3]
             # Left stick (move forward/backward)
             long_x = self.latest_msg.axes[1]
@@ -66,8 +68,8 @@ class JoyManager:
             graceful_shutdown = self.latest_msg.buttons[2]
             hard_shutdown = self.latest_msg.buttons[1]
 
-            # focchi joy
-            ## Left stick  (move lateral)
+            # # focchi joy
+            # # Left stick  (move lateral)
             # rot_z = self.latest_msg.axes[0]
             # # Right stick  (move forward/backward)
             # long_x = self.latest_msg.axes[3]
