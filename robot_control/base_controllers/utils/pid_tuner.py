@@ -5,7 +5,7 @@ import base_controllers.params as conf
 
 class PIDTuningGui:
      
-    def __init__(self, robot, mode:str = 'none', tuning_type = 'PID',   init_freq: float = 0.5, init_amp = 0.):
+    def __init__(self, robot, mode:str = 'none', tuning_type = 'PID',   init_freq: float = 0.5, init_amp = np.zeros(6)):
 
         self.robot = robot
         self.tuning_type = tuning_type
@@ -56,6 +56,7 @@ class PIDTuningGui:
             label_font = ("Helvetica", 12, "bold")
 
             if self.tuning_type == 'PID':
+
                 # Create sliders for kp, kd, ki
                 self.kp_sliders = self.create_triple_slider("KP", 0, self.initial_kp, 60, 0.1, label_font)
                 self.kd_sliders = self.create_triple_slider("KD", 1, self.initial_kd, 2, 0.01, label_font)
@@ -68,21 +69,25 @@ class PIDTuningGui:
                 self.kd_ang_sliders = self.create_triple_slider("KD ANG", 6, self.initial_kd_ang, 10, 0.01, label_font)
 
                 # Add a separate row for the frequency slider
-                ttk.Label(self.root, text="Freq", font=label_font).grid(row=7, column=0, sticky="e", padx=10, pady=10)
+                ttk.Label(self.root, text="Freq", font=label_font).grid(row=8, column=0, sticky="e", padx=10, pady=10)
                 self.freq_slider = tk.Scale(self.root, from_=0.25, to=2, resolution=0.1, orient="horizontal", length=250)
                 self.freq_slider.set(self.debug_freq)
                 self.freq_slider.grid(row=7, column=1, columnspan=3)  # Align with the other sliders
 
+
+
             if self.tuning_type == 'BODY':
+                # Create sliders for amplitudes
+                self.amp_sliders = self.create_triple_slider("Amp", 10, self.debug_amp, 0, 0.5, label_font)
+
                 # Add a separate row for the frequency slider
                 ttk.Label(self.root, text="Freq", font=label_font).grid(row=7, column=0, sticky="e", padx=10, pady=10)
                 self.freq_slider = tk.Scale(self.root, from_=0.25, to=2, resolution=0.1, orient="horizontal", length=250)
                 self.freq_slider.set(self.debug_freq)
                 self.freq_slider.grid(row=7, column=1, columnspan=3)  # Align with the other sliders
 
-
             # Button to apply PID changes
-            self.update_button = ttk.Button(self.root, text="Update PID", command=self.update_pid_values)
+            self.update_button = ttk.Button(self.root, text="Update PID", command=self.update_values)
             self.update_button.grid(row=8, column=0, columnspan=4, pady=20)
 
             #  Check periodically if shutdown flag was set
@@ -103,7 +108,7 @@ class PIDTuningGui:
     def get_slider_values(self, sliders, max_values):
         return np.clip([slider.get() for slider in sliders], 0, max_values)
 
-    def update_pid_values(self):
+    def update_values(self):
 
         if self.tuning_type == 'PID':
             # Get values from each set of three sliders as arrays
@@ -117,10 +122,36 @@ class PIDTuningGui:
             ki_array = np.tile(ki_values, 4)
 
             # Get values for linear and angular PID settings
-            kp_lin_array = self.get_slider_values(self.kp_lin_sliders, 1000.)
-            kd_lin_array = self.get_slider_values(self.kd_lin_sliders, 100.)
-            kp_ang_array = self.get_slider_values(self.kp_ang_sliders, 200.)
-            kd_ang_array = self.get_slider_values(self.kd_ang_sliders, 10.)
+            kp_lin_array = self.get_slider_values(self.kp_lin_sliders, 2000.)
+            kd_lin_array = self.get_slider_values(self.kd_lin_sliders, 200.)
+            kp_ang_array = self.get_slider_values(self.kp_ang_sliders, 300.)
+            kd_ang_array = self.get_slider_values(self.kd_ang_sliders, 30.)
+
+            self.debug_freq = self.freq_slider.get()
+
+            # # Set the PID values on the robot's controller
+            self.robot.pid.setPDjoints(kp_array, kd_array, ki_array)
+            self.robot.wbc.setGains(kp_lin_array, kd_lin_array, kp_ang_array, kd_ang_array)
+
+            print("PID updated:", kp_array, kd_array, ki_array)
+            print("PID lin ang updated:", kp_lin_array, kd_lin_array, kp_ang_array, kd_ang_array)
+
+        if self.tuning_type == 'BODY':
+            # Get values from each set of three sliders as arrays
+            kp_values = self.get_slider_values(self.kp_sliders, 60.)
+            kd_values = self.get_slider_values(self.kd_sliders, 2.)
+            ki_values = self.get_slider_values(self.ki_sliders, 5.)
+
+            # Repeat each 3-element array 4 times to create a 12-element array
+            kp_array = np.tile(kp_values, 4)
+            kd_array = np.tile(kd_values, 4)
+            ki_array = np.tile(ki_values, 4)
+
+            # Get values for linear and angular PID settings
+            kp_lin_array = self.get_slider_values(self.kp_lin_sliders, 2000.)
+            kd_lin_array = self.get_slider_values(self.kd_lin_sliders, 200.)
+            kp_ang_array = self.get_slider_values(self.kp_ang_sliders, 300.)
+            kd_ang_array = self.get_slider_values(self.kd_ang_sliders, 30.)
 
             self.debug_freq = self.freq_slider.get()
 
