@@ -13,6 +13,7 @@ from base_controllers.components.rl_velocity_controller.LocomotionPolicyWrapper 
 from termcolor import colored
 import base_controllers.params as conf
 from scipy.io import savemat
+from datetime import datetime, timezone
 #gazebo messages
 from gazebo_ros import gazebo_interface
 from gazebo_msgs.msg import ContactsState
@@ -58,130 +59,36 @@ class QuadrupedController(BaseController):
     def initSubscribers(self):
         self.sub_jstate = ros.Subscriber("/" + self.robot_name + "/joint_states", JointState, callback=self._receive_jstate, queue_size=1, tcp_nodelay=True)
         self.sub_pid_effort = ros.Subscriber("/" + self.robot_name + "/effort_pid", EffortPid, callback=self._receive_pid_effort, queue_size=1, tcp_nodelay=True)
+        self.sub_imu = ros.Subscriber("/" + self.robot_name + "/trunk_imu", Imu,  callback=self._receive_imu, queue_size=1, tcp_nodelay=True)
 
-        if self.real_robot:
-            self.sub_imu_lin_acc = ros.Subscriber("/" + self.robot_name + "/trunk_imu", Vector3,  callback=self._receive_imu_acc_real, queue_size=1, tcp_nodelay=True)
-            if self.state_estimation == 'mocap':  # use pronto for state estimation
-                from geometry_msgs.msg import PoseStamped
-                launchFileNode("mocap_qualisys", "qualisys.launch")
-                self.sub_pose = ros.Subscriber("/qualisys/robot/pose", PoseStamped, callback=self._receive_mocap, queue_size=1, tcp_nodelay=True)
-                self.pub_mocap_twist = ros.Publisher("/qualisys/robot/twist", Twist, queue_size=1, tcp_nodelay=True)
+        if self.state_estimation == 'ekf':  # use pronto for state estimation
+            #  stateest node requires publication of msg type sensor:IMU in topic aliengo/imu we remap
+            startNode(package="topic_tools", executable="relay", args="/" + self.robot_name + "/trunk_imu" + "  " + "/" + self.robot_name + "/imu", name="trunk_imu_to_imu")
+            self.pronto_config = "aliengo_state_estimator_sim.yaml"
+            from pronto_msgs.msg import QuadrupedStance, QuadrupedForceTorqueSensors
+            self.pronto_contacts_sub = ros.Subscriber("/state_estimator_pronto/stance", QuadrupedStance, callback=self._receive_pronto_contacts, queue_size=1, tcp_nodelay=True)
+            self.sub_pose = ros.Subscriber("/state_estimator_pronto/odom", Odometry, callback=self._receive_pose, queue_size=1, tcp_nodelay=True)
+            #these on real robot are published by hw interface
+            self.pub_feet_forces = ros.Publisher("/" + self.robot_name + "/feet_forces", QuadrupedForceTorqueSensors, queue_size=1, tcp_nodelay=True)
 
-            elif self.state_estimation == 'ekf':#use pronto for state estimation
-                #start stateest node
-                # self.u.putIntoGlobalParamServer("use_sim_time", str("false"))
-                # load_rosparams_from_package('pronto_aliengo', 'config/aliengo_state_estimator.yaml', target_namespace='/')
-                # startNode(package="pronto_aliengo", executable="pronto_aliengo_node", args='', name="pronto_aliengo")
-                # startNode(package="pronto_aliengo", executable="aliengo_joint_swapper", args='',name="aliengo_joint_swapper")
-                from pronto_msgs.msg import QuadrupedStance
-                self.pronto_contacts_sub = ros.Subscriber("/state_estimator_pronto/stance", QuadrupedStance, callback=self._receive_pronto_contacts, queue_size=1, tcp_nodelay=True)
-                #we start the pronto node only after startup!
-                self.pronto_config = "aliengo_state_estimator.yaml"
-                self.sub_pose = ros.Subscriber("/state_estimator_pronto/odom", Odometry,  callback=self._receive_pose, queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='odometry':#use odometry
-                self.sub_imu_euler = ros.Subscriber("/" + self.robot_name + "/euler_imu", Vector3,  callback=self._receive_euler, queue_size=1, tcp_nodelay=True)
-                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry,   callback=self._receive_pose_real, queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='imu':#use angular velocity and quaternion coming from IMU (robot_name/imu topic) and write BasePose BaseTwist variables
-                self.sub_imu = ros.Subscriber("/" + self.robot_name + "/imu", Imu,  callback=self._receive_imu, queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='ground_truth':
-                print(f"state_estimation ground truth  not possible on real robot!")
-            else:
-                print(f"state_estimation type not known {self.state_estimation}")
-        else:#simulation
-            self.sub_imu_lin_acc = ros.Subscriber("/" + self.robot_name + "/trunk_imu", Imu,  callback=self._receive_imu_acc, queue_size=1, tcp_nodelay=True)
+        elif self.state_estimation=='ground_truth':
+            self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry,  callback=self._receive_pose,  queue_size=1, tcp_nodelay=True)
+        else:
+            print(f"state_estimation type not known {self.state_estimation}")
 
-            if self.state_estimation == 'ekf':  # use pronto for state estimation
-                #  stateest node requires publication of msg type sensor:IMU in topic aliengo/imu we remap
-                startNode(package="topic_tools", executable="relay", args="/" + self.robot_name + "/trunk_imu" + "  " + "/" + self.robot_name + "/imu", name="trunk_imu_to_imu")
-                self.pronto_config = "aliengo_state_estimator_sim.yaml"
-                from pronto_msgs.msg import QuadrupedStance, QuadrupedForceTorqueSensors
-                self.pronto_contacts_sub = ros.Subscriber("/state_estimator_pronto/stance", QuadrupedStance, callback=self._receive_pronto_contacts, queue_size=1, tcp_nodelay=True)
-                self.sub_pose = ros.Subscriber("/state_estimator_pronto/odom", Odometry, callback=self._receive_pose, queue_size=1, tcp_nodelay=True)
-                #these on real robot are published by hw interface
-                self.pub_feet_forces = ros.Publisher("/" + self.robot_name + "/feet_forces", QuadrupedForceTorqueSensors, queue_size=1, tcp_nodelay=True)
-
-            elif self.state_estimation=='ground_truth':
-                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry,  callback=self._receive_pose,  queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='odometry':
-                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry, callback=self._receive_pose_real, queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='imu':
-                self.sub_imu = ros.Subscriber("/" + self.robot_name + "/trunk_imu", Imu,  callback=self._receive_imu, queue_size=1, tcp_nodelay=True)
-            else:
-                print(f"state_estimation type not known {self.state_estimation}")
-
-            if self.use_ground_truth_contacts:
-                self.sub_contact_lf = ros.Subscriber("/" + self.robot_name + "/lf_foot_bumper", ContactsState,
-                                                     callback=self._receive_contact_lf, queue_size=1, buff_size=2 ** 24,
-                                                     tcp_nodelay=True)
-                self.sub_contact_rf = ros.Subscriber("/" + self.robot_name + "/rf_foot_bumper", ContactsState,
-                                                     callback=self._receive_contact_rf, queue_size=1, buff_size=2 ** 24,
-                                                     tcp_nodelay=True)
-                self.sub_contact_lh = ros.Subscriber("/" + self.robot_name + "/lh_foot_bumper", ContactsState,
-                                                     callback=self._receive_contact_lh, queue_size=1, buff_size=2 ** 24,
-                                                     tcp_nodelay=True)
-                self.sub_contact_rh = ros.Subscriber("/" + self.robot_name + "/rh_foot_bumper", ContactsState,
-                                                     callback=self._receive_contact_rh, queue_size=1, buff_size=2 ** 24,
-                                                     tcp_nodelay=True)
-
-
-    def _receive_imu_acc_real(self, msg):
-        self.baseLinAccB[0] = msg.x
-        self.baseLinAccB[1] = msg.y
-        self.baseLinAccB[2] = msg.z
-        # baseLinAccW is without gravity
-        self.baseLinAccW = self.b_R_w.T @ (self.baseLinAccB - self.imu_utils.IMU_accelerometer_bias) - self.imu_utils.g0
-
-
-    def _receive_imu_acc(self, msg):
-        self.baseLinAccB[0] = msg.linear_acceleration.x
-        self.baseLinAccB[1] = msg.linear_acceleration.y
-        self.baseLinAccB[2] = msg.linear_acceleration.z
-        # baseLinAccW is without gravity
-        self.baseLinAccW = self.b_R_w.T @ (self.baseLinAccB - self.imu_utils.IMU_accelerometer_bias) - self.imu_utils.g0
-
-    def _receive_euler(self, msg):
-        self.euler[0] = msg.x
-        self.euler[1] = msg.y
-        self.euler[2] = msg.z
-
-    def _receive_pronto_contacts(self, msg):
-        self.pronto_contacts[0] = msg.lf
-        self.pronto_contacts[1] = msg.rf
-        self.pronto_contacts[2] = msg.lh
-        self.pronto_contacts[3] = msg.rh
-
-    def _receive_mocap(self, msg):
-        self.quaternion[0] = msg.pose.orientation.x
-        self.quaternion[1] = msg.pose.orientation.y
-        self.quaternion[2] = msg.pose.orientation.z
-        self.quaternion[3] = msg.pose.orientation.w
-        self.basePoseW[self.u.sp_crd["LX"]] = msg.pose.position.x
-        self.basePoseW[self.u.sp_crd["LY"]] = msg.pose.position.y
-        self.basePoseW[self.u.sp_crd["LZ"]] = msg.pose.position.z
-        self.euler = np.array(euler_from_quaternion(self.quaternion))
-        self.basePoseW[self.u.sp_crd["AX"]] = self.euler[0]
-        self.basePoseW[self.u.sp_crd["AY"]] = self.euler[1]
-        self.basePoseW[self.u.sp_crd["AZ"]] = self.euler[2]
-        # filter
-        self.basePoseW_f = self.beta * self.basePoseW + (1. - self.beta) * self.basePoseW_f
-
-        Jomega = self.math_utils.Tomega(self.u.angPart(self.basePoseW))
-        vel = self.u.linPart(self.basePoseW_f-self.basePoseW_f_old) / self.dt
-        omega = Jomega @ self.u.angPart(self.basePoseW_f-self.basePoseW_f_old) / self.dt
-        self.baseTwistW[:3] = vel
-        self.baseTwistW[3:]  = omega
-        self.basePoseW_f_old = self.basePoseW_f.copy()
-        msg=Twist()
-        msg.linear.x = self.baseTwistW[0]
-        msg.linear.y = self.baseTwistW[1]
-        msg.linear.z = self.baseTwistW[2]
-        msg.angular.x = self.baseTwistW[3]
-        msg.angular.y = self.baseTwistW[4]
-        msg.angular.z = self.baseTwistW[5]
-        self.pub_mocap_twist.publish(msg)
-        # compute orientation matrix
-        self.b_R_w = self.math_utils.rpyToRot(self.euler)
-
+        if self.use_ground_truth_contacts:
+            self.sub_contact_lf = ros.Subscriber("/" + self.robot_name + "/lf_foot_bumper", ContactsState,
+                                                 callback=self._receive_contact_lf, queue_size=1, buff_size=2 ** 24,
+                                                 tcp_nodelay=True)
+            self.sub_contact_rf = ros.Subscriber("/" + self.robot_name + "/rf_foot_bumper", ContactsState,
+                                                 callback=self._receive_contact_rf, queue_size=1, buff_size=2 ** 24,
+                                                 tcp_nodelay=True)
+            self.sub_contact_lh = ros.Subscriber("/" + self.robot_name + "/lh_foot_bumper", ContactsState,
+                                                 callback=self._receive_contact_lh, queue_size=1, buff_size=2 ** 24,
+                                                 tcp_nodelay=True)
+            self.sub_contact_rh = ros.Subscriber("/" + self.robot_name + "/rh_foot_bumper", ContactsState,
+                                                 callback=self._receive_contact_rh, queue_size=1, buff_size=2 ** 24,
+                                                 tcp_nodelay=True)
 
     def _receive_imu(self, msg):
         self.quaternion[0] = msg.orientation.x
@@ -190,45 +97,36 @@ class QuadrupedController(BaseController):
         self.quaternion[3] = msg.orientation.w
 
         self.euler = np.array(euler_from_quaternion(self.quaternion))
+        #euler angles
         self.basePoseW[self.u.sp_crd["AX"]] = self.euler[0]
         self.basePoseW[self.u.sp_crd["AY"]] = self.euler[1]
         self.basePoseW[self.u.sp_crd["AZ"]] = self.euler[2]
+
         # compute orientation matrix
         self.b_R_w = self.math_utils.rpyToRot(self.euler)
         self.angVelB[0] = msg.angular_velocity.x
         self.angVelB[1] = msg.angular_velocity.y
         self.angVelB[2] = msg.angular_velocity.z
+        # angular part of twist
         self.baseTwistW[3:] = self.b_R_w.T.dot(self.angVelB)
 
-    def _receive_pose_real(self, msg):
-        self.quaternion[0] = msg.pose.pose.orientation.x
-        self.quaternion[1] = msg.pose.pose.orientation.y
-        self.quaternion[2] = msg.pose.pose.orientation.z
-        self.quaternion[3] = msg.pose.pose.orientation.w
+        # linear acceleration
+        self.baseLinAccB[0] = msg.linear_acceleration.x
+        self.baseLinAccB[1] = msg.linear_acceleration.y
+        self.baseLinAccB[2] = msg.linear_acceleration.z
 
-        self.basePoseW[self.u.sp_crd["LX"]] = self.basePoseW_legOdom[0]
-        self.basePoseW[self.u.sp_crd["LY"]] = self.basePoseW_legOdom[1]
-        self.basePoseW[self.u.sp_crd["LZ"]] = self.basePoseW_legOdom[2]
+        # baseLinAccW is without gravity
+        self.baseLinAccW = self.b_R_w.T @ (self.baseLinAccB - self.imu_utils.IMU_accelerometer_bias) - self.imu_utils.g0
 
-        self.basePoseW[self.u.sp_crd["AX"]] = self.euler[0]
-        self.basePoseW[self.u.sp_crd["AY"]] = self.euler[1]
-        self.basePoseW[self.u.sp_crd["AZ"]] = self.euler[2]
+        # get estimates of base position and linear twist by odometry
+        if self.state_estimation == 'odometry':
+            self.basePoseW[self.u.sp_crd["LX"]] = self.basePoseW_legOdom[0]
+            self.basePoseW[self.u.sp_crd["LY"]] = self.basePoseW_legOdom[1]
+            self.basePoseW[self.u.sp_crd["LZ"]] = self.basePoseW_legOdom[2]
 
-        if False:#any(self.contact_state):
             self.baseTwistW[self.u.sp_crd["LX"]] = self.baseTwistW_legOdom[0]
             self.baseTwistW[self.u.sp_crd["LY"]] = self.baseTwistW_legOdom[1]
             self.baseTwistW[self.u.sp_crd["LZ"]] = self.baseTwistW_legOdom[2]
-        else:
-            self.baseTwistW[self.u.sp_crd["LX"]] = self.imu_utils.baseLinTwistImuW[0]
-            self.baseTwistW[self.u.sp_crd["LY"]] = self.imu_utils.baseLinTwistImuW[1]
-            self.baseTwistW[self.u.sp_crd["LZ"]] = self.imu_utils.baseLinTwistImuW[2]
-
-        self.baseTwistW[self.u.sp_crd["AX"]] = msg.twist.twist.angular.x
-        self.baseTwistW[self.u.sp_crd["AY"]] = msg.twist.twist.angular.y
-        self.baseTwistW[self.u.sp_crd["AZ"]] = msg.twist.twist.angular.z
-
-        # compute orientation matrix
-        self.b_R_w = self.math_utils.rpyToRot(self.euler)
 
     def initVars(self):
         super().initVars()
@@ -545,12 +443,8 @@ class QuadrupedController(BaseController):
             self.pid.setPDjoints(self.kp_j, self.kd_j, self.ki_j)
         if basePoseW is None:
             basePoseW = np.hstack([self.base_offset, np.zeros(3)])
-
-
         self.freezeBase(flag=True, basePoseW=basePoseW)
         ros.sleep(0.5)
-
-
         gazebo_interface.set_model_configuration_client(self.robot_name, '', self.joint_names, self.qj_0, '/gazebo')
         while np.linalg.norm(self.qd)>0.05 or np.linalg.norm(self.q-self.q_des)>0.05:
             self.updateKinematics()
@@ -742,17 +636,12 @@ class QuadrupedController(BaseController):
 
         self.send_des_jstate(self.q_des, self.qd_des, self.tau_ffwd)
 
-        # if (self.APPLY_EXTERNAL_WRENCH and self.time > self.TIME_EXTERNAL_WRENCH):
-        #     print("START APPLYING EXTERNAL WRENCH")
-        #     self.applyForce(0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.05)
-        #     self.APPLY_EXTERNAL_WRENCH = False
-
         # log variables
         if log_data_in_send_command:
             self.logData()
         self.rate.sleep()
         self.sync_check()
-        self.time = np.round(self.time + self.dt, 4)#np.array([self.loop_time]), 3)
+        self.time = np.round(self.time + self.dt, 4)
 
 
     def visualizeContacts(self, delete_markers=False):
@@ -787,13 +676,6 @@ class QuadrupedController(BaseController):
                                   self.B_contacts[2],
                                   self.B_contacts[0] ], "red", visual_frame="base_link")
 
-        self.ros_pub.add_polygon([self.B_contacts_des[0],
-                                  self.B_contacts_des[1],
-                                  self.B_contacts_des[3],
-                                  self.B_contacts_des[2],
-                                  self.B_contacts_des[0]], "green", visual_frame="base_link")
-
-
         self.ros_pub.publishVisual(delete_markers=delete_markers)
 
     def updateKinematics(self, update_legOdom=True, noise=None):
@@ -806,7 +688,7 @@ class QuadrupedController(BaseController):
                                                                                       B_contacts=self.B_contacts,
                                                                                       b_R_w=self.b_R_w,
                                                                                       wJ=self.wJ,
-                                                                                      ang_vel=self.u.angPart(self.baseTwistW),
+                                                                                      ang_vel=self.b_R_w.T.dot(self.angVelB),
                                                                                       qd=self.qd,
                                                                                       update_legOdom=update_legOdom)
         self.imu_utils.compute_lin_vel(self.baseLinAccW, self.loop_time)
@@ -863,6 +745,8 @@ class QuadrupedController(BaseController):
             print("Go fold Accomplished → next state")
             sm.next(time)
 
+    # helpers for homing procedure
+
     def contactsAchieved(self):
         contacts_achieved = True
         for leg in range(4):
@@ -890,7 +774,6 @@ class QuadrupedController(BaseController):
             else:
                 self.delta_z = 0.1
         #on loop
-        #print(f"Searching contacts leg...{time}")
         h_R_w = self.b_R_w @ pin.rpy.rpyToMatrix(0, 0, self.u.angPart(self.basePoseW)[2])
         for leg in range(4):
             # update feet task to extend feet to acquire contact
@@ -1160,7 +1043,7 @@ if __name__ == '__main__':
     p = QuadrupedController('aliengo')
     world_name = 'fast.world'
     use_gui = False
-    p.state_estimation = 'odometry' # 'odometry','imu', 'pronto', 'ground_truth' (only sim), 'mocap'
+    p.state_estimation = 'odometry' # 'odometry',  'pronto', 'ground_truth' (only sim), 'mocap'
     rl_control = 'none' #'none', 'sensor_based' (Giulio), 'state_est_based' (Riccardo)
     # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
     rl_use_nn_se = p.state_estimation != 'pronto'
@@ -1169,7 +1052,6 @@ if __name__ == '__main__':
     p.SAVE_BAG = False  #
     if p.robot_name == 'go2':
         p.custom_locosim_launch_file = True
-
 
     if rl_control == 'state_est_based':
         if p.real_robot and (p.state_estimation != 'pronto' and p.state_estimation != 'pronto'):
@@ -1188,15 +1070,13 @@ if __name__ == '__main__':
                                            'rviz:=true',
                                            *(['task_period:=0.002'] if p.real_robot else [])]) #change task period to 500Hz instead of 1000Hz for real robot
         if p.SAVE_BAG:
-            from datetime import datetime, timezone
+
 
             now = datetime.now()
             format_date = now.strftime("%Y-%m-%d-%H-%M-%S")
             p.recorder = RosbagControlledRecorder(
-                topics='/aliengo/joint_states /aliengo/imu /aliengo/feet_forces /state_estimator_pronto/pose '
-                       '/state_estimator_pronto/twist /state_estimator_pronto/vel_raw  '
-                       '/state_estimator_pronto/stance /value_function /qualisys/robot/pose /rl_ref_vel /tf /tf_static',
-                        bag_name="saferl_" + format_date + ".bag", record_from_startup_=False)
+                topics='/aliengo/joint_states /aliengo/trunk_imu /aliengo/ground_truth /rl_ref_vel /tf /tf_static',
+                        bag_name="test_" + format_date + ".bag", record_from_startup_=False)
 
             p.recorder.start_recording_srv()
         if use_joy:
