@@ -133,7 +133,6 @@ RUN pip3 install line_profiler
 
 
 #TSID
-
 RUN apt-get update && apt-get install -y  ros-noetic-tsid
 
 RUN apt-get update \
@@ -163,6 +162,9 @@ RUN python3 -m pip install --no-cache-dir \
       ipywidgets \
  && rm -rf /var/lib/apt/lists/*
 
+#joy node
+RUN apt-get update && apt-get install -y \ 
+	ros-noetic-joy
 
 # -----------------------------
 # Patch roslaunch to reduce shutdown timeout
