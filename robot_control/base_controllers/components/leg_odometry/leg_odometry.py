@@ -98,16 +98,16 @@ class LegOdometry:
                         for k, value in enumerate(contact_state):
                             if value:
                                 nc+=1
-                                w_p_b_foot = self.w_feet_pos_init[:, k] - b_R_w@ B_contacts[k]
-                                w_v_b_foot = -pin.skew(ang_vel) @  b_R_w @ B_contacts[k] - wJ[k] @ self.u.getLegJointState(k, qd)
+                                w_p_b_foot = self.w_feet_pos_init[:, k] - b_R_w.T @ B_contacts[k]
+                                w_v_b_foot = -pin.skew(ang_vel) @  b_R_w.T @ B_contacts[k] - wJ[k] @ self.u.getLegJointState(k, qd)
 
                                 self.w_p_b_update += w_p_b_foot
                                 self.w_v_b_update += w_v_b_foot
                     else:
                         for k, value in enumerate(contact_state):
                             nc = 4
-                            w_p_b_foot = self.w_feet_pos_init[:, k] - b_R_w @ B_contacts[k]
-                            w_v_b_foot = -pin.skew(ang_vel) @ b_R_w @ B_contacts[k] - wJ[k] @ self.u.getLegJointState(k,
+                            w_p_b_foot = self.w_feet_pos_init[:, k] - b_R_w.T @ B_contacts[k]
+                            w_v_b_foot = -pin.skew(ang_vel) @ b_R_w.T @ B_contacts[k] - wJ[k] @ self.u.getLegJointState(k,
                                                                                                                       qd)
 
                             self.w_p_b_update += w_p_b_foot
