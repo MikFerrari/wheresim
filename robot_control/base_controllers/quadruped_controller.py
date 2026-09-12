@@ -1142,38 +1142,46 @@ if __name__ == '__main__':
         com_state, foot_steps, cop,  gait_pattern = p.getCoMReference(com_optim_conf, p.robot_height, p.comPoseW[:2], p.comTwistW[:2])
         com_ref,  dcom_ref, ddcom_ref, x_ref, dx_ref, ddx_ref, cop_ref = p.generateInterpolatedReference(com_optim_conf, com_state, foot_steps, cop,   gait_pattern, p.robot_height)
 
-        # if conf.plotting:
-        #     N = foot_steps.shape[1]
-        #     plt.figure()
-        #     plt.plot(com_state[0, :N], color='green', label="CoM X pos")
-        #
-        #     plt.plot(cop[0, :], color='blue',label="CoP X")
-        #     plt.plot(foot_steps[0, :], ':', color='black', label="foot steps 0 X")
-        #     plt.plot(foot_steps[2, :], ':', color='black', label="foot steps 1 X")
-        #     plt.grid(True)
-        #     plt.legend()
-        #
-        #     plt.figure()
-        #     plt.plot(com_state[2, :N], color='green', label="CoM X vel")
-        #     plt.grid(True)
-        #     plt.legend()
-        #
-        #
-        #     plt.figure()
-        #     plt.plot(com_state[1, :N], color='green', label="CoM Y pos")
-        #     plt.plot(cop[1, :], color='blue', label="CoP Y")
-        #     plt.plot(foot_steps[1, :], ':',color='black',label="foot steps 0 Y")
-        #     plt.plot(foot_steps[3, :], ':', color='black', label="foot steps 1 Y")
-        #     plt.legend()
-        #     plt.grid(True)
-        #
-        #     plt.figure()
-        #     plt.plot(com_state[2, :N], color='green', label="CoM Y vel")
-        #     plt.grid(True)
-        #     plt.legend()
-        #
-        #     plt.show( )
-        #     plt.pause(0.001)
+        if conf.plotting:
+            N = foot_steps.shape[1]
+            plt.figure()
+            plt.plot(com_state[0, :N], color='green', label="CoM X pos")
+
+            plt.plot(cop[0, :], color='blue',label="CoP X")
+            plt.plot(foot_steps[0, :], ':', color='black', label="foot steps 0 X")
+            plt.plot(foot_steps[2, :], ':', color='black', label="foot steps 1 X")
+            plt.grid(True)
+            plt.legend()
+
+            # plt.figure()
+            # plt.plot(com_state[2, :N], color='green', label="CoM X vel")
+            # plt.grid(True)
+            # plt.legend()
+            plt.figure()
+            plt.plot(com_state[1, :N], color='green', label="CoM Y pos")
+            plt.plot(cop[1, :], color='blue', label="CoP Y")
+            plt.plot(foot_steps[1, :], ':',color='black',label="foot steps 0 Y")
+            plt.plot(foot_steps[3, :], ':', color='black', label="foot steps 1 Y")
+            plt.legend()
+            plt.grid(True)
+            #
+            # plt.figure()
+            # plt.plot(com_state[2, :N], color='green', label="CoM Y vel")
+            # plt.grid(True)
+            # plt.legend()
+            # plt.show( )
+
+            plt.figure()
+            plt.plot(com_state[0, :N], com_state[1, :N], color='green', label="CoM XY")
+            plt.plot(cop[0, :], cop[1, :], color='blue', label="CoP XY")
+            plt.scatter(foot_steps[0, :], foot_steps[1, :], facecolors='none', edgecolors='black', label="footholds")
+            plt.scatter(foot_steps[2, :], foot_steps[3, :], facecolors='none', edgecolors='black')
+            plt.xlabel('X [m]')
+            plt.ylabel('Y [m]')
+            plt.axis('equal')
+            plt.legend()
+            plt.grid(True)
+            plt.pause(0.001)
 
 
         # TSID whole-body controller, initialized with the current (standing) robot state
@@ -1186,7 +1194,7 @@ if __name__ == '__main__':
         p.pid.setPDs(0, 0,0 )
 
         #to reduce simulation frequency
-        #p.setSimSpeed(dt_sim=0.001, max_update_rate=100, iters=1500)
+
         while not ros.is_shutdown():
             p.updateKinematics()
             if p.gracefulCollapseFlag:
@@ -1210,7 +1218,7 @@ if __name__ == '__main__':
                     break
 
             #p.applyForce(0, 100, 0, 0, 0, 0, 0.25)
-            if rl_control != 'none' and (p.time > (p.startTime + 3.)):
+            if rl_control != 'none' and (p.time > (p.startTime + 1.)):
                 if use_joy:
                     rl_controller.velocity_cmd = np.array([long_x, long_y, rot_z])
                 else:
@@ -1324,16 +1332,21 @@ if __name__ == '__main__':
 
         fig = plt.figure()
         fig.suptitle('CoM and CoP XY tracking', fontsize=20)
-        plt.plot(p.comPoseW_des_log[0, :], p.comPoseW_des_log[1, :], color='red', linestyle='--', lw=lw_des, label='CoM des')
-        plt.plot(p.comPoseW_log[0, :], p.comPoseW_log[1, :], color='red', lw=lw_act, label='CoM act')
-        plt.plot(p.cop_des_log[0, :], p.cop_des_log[1, :], color='blue', linestyle='--', lw=lw_des, label='CoP des')
-        plt.plot(p.cop_log[0, :], p.cop_log[1, :], color='blue', lw=lw_act, label='CoP act')
+        plt.plot(p.comPoseW_des_log[0, :], p.comPoseW_des_log[1, :], color='green', lw=2, label='CoM des')
+        plt.plot(p.comPoseW_log[0, :], p.comPoseW_log[1, :], color='green', linestyle='-',  lw=1, label='CoM act')
+        plt.plot(p.cop_des_log[0, :], p.cop_des_log[1, :], color='blue', lw=2, label='CoP des')
+        plt.plot(p.cop_log[0, :], p.cop_log[1, :], color='blue', linestyle='-', lw=1, label='CoP act')
+        plt.scatter(foot_steps[0, :], foot_steps[1, :], facecolors='none', edgecolors='black', label='footholds')
+        plt.scatter(foot_steps[2, :], foot_steps[3, :], facecolors='none', edgecolors='black')
         plt.xlabel('X [m]')
         plt.ylabel('Y [m]')
         plt.axis('equal')
         plt.legend()
         plt.grid(True)
+        plt.ion()
+        plt.show()
 
-        plt.show(block=True)
+
+
     if p.SAVE_BAG:
         p.recorder.stop_recording_srv()
