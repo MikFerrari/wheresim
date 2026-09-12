@@ -1002,6 +1002,10 @@ class QuadrupedController(BaseController):
         for k in hip_joint_names.keys():
             hip_joint_ids[k] = self.robot.model.getJointId(hip_joint_names[k])
             hip_pos[k] = self.robot.placement(self.neutral_fb_jointstate, hip_joint_ids[k]).translation[:2]
+        # use the actual foot placement (base frame), not the HAA joint position: the HAA joint
+            # foot_leg_names = {"FL": "LF", "FR": "RF", "RL": "LH", "RR": "RH"}
+            # hip_pos = {k: self.B_contacts[self.u.leg_map[v]][:2].copy() for k, v in foot_leg_names.items()}
+
 
         # MPC Parameters:
         nb_dt_per_step = int(round(com_conf.T_step / com_conf.dt_mpc))
@@ -1121,9 +1125,10 @@ if __name__ == '__main__':
         if use_joy:
             joy = JoyManager("js1", end_scale = 0.2)
 
-        p.resetRobot(basePoseDes=np.array([-0.204, -0.0,  0.356, -0.0, -0.0, 0.0]))
+        p.resetRobot(basePoseDes=np.array([0.0, -0.0,  0.356, -0.0, -0.0, 0.0]))
         #p.startupProcedure()
-        #p.setSimSpeed(dt_sim=0.001, max_update_rate=100, iters=1500)
+        # to reduce simulation frequency
+        p.setSimSpeed(dt_sim=0.001, max_update_rate=100, iters=1500)
 
         if p.state_estimation=='pronto':
             launchFileNode("mocap_qualisys", "qualisys.launch")
@@ -1175,7 +1180,7 @@ if __name__ == '__main__':
             plt.plot(com_state[0, :N], com_state[1, :N], color='green', label="CoM XY")
             plt.plot(cop[0, :], cop[1, :], color='blue', label="CoP XY")
             plt.scatter(foot_steps[0, :], foot_steps[1, :], facecolors='none', edgecolors='black', label="footholds")
-            plt.scatter(foot_steps[2, :], foot_steps[3, :], facecolors='none', edgecolors='black')
+            plt.scatter(foot_steps[2, :], foot_steps[3, :], facecolors='red', edgecolors='black')
             plt.xlabel('X [m]')
             plt.ylabel('Y [m]')
             plt.axis('equal')
@@ -1193,8 +1198,8 @@ if __name__ == '__main__':
         counter = 0
         p.pid.setPDs(0, 0,0 )
 
-        #to reduce simulation frequency
 
+        print(colored(f"Starting main loop  T =  {p.time}", "blue"))
         while not ros.is_shutdown():
             p.updateKinematics()
             if p.gracefulCollapseFlag:
@@ -1281,6 +1286,9 @@ if __name__ == '__main__':
 
                     for foot_name in com_optim_conf.foot_names:
                         leg = p.u.leg_map[foot_to_legmap[foot_name]]
+                        # feed the planned foot trajectory into the des-foot log (plotContacts), since
+                        # this walking loop never otherwise touches p.W_contacts_des during locomotion
+                        p.W_contacts_des[leg] = x_ref[foot_name][:, idx]
                         #planned liftoff
                         is_swinging = x_ref[foot_name][2, idx] > foot_swing_thresh
                         if is_swinging:
@@ -1328,7 +1336,7 @@ if __name__ == '__main__':
         plotFrame('velocity', time_log=p.time_log, des_Twist_log=p.comTwistW_des_log, Twist_log=p.comTwistW_log,
                   title='CoM', frame='W', sharex=True, sharey=False, start=0, end=-1)
         plotContacts('position', time_log=p.time_log, des_LinPose_log=p.W_contacts_des_log, LinPose_log=p.W_contacts_log,
-                     contact_states=p.contact_state_log, frame='W', title='Feet position and contact state')
+                      frame='W', title='Feet position and contact state')
 
         fig = plt.figure()
         fig.suptitle('CoM and CoP XY tracking', fontsize=20)
