@@ -14,8 +14,8 @@ wp = 1e-2   # footstep distance to hip cost weight
 g = 9.81    # norm of the gravity vector
 foot_step_0 = ["FL", "RR"]  # initial foot steps on the ground
 dt_mpc = 0.1  # sampling time interval
-T_step = 0.6  # time needed for every step
-step_height = 0.05  # fixed step height
+T_step = 0.4  # time needed for every step
+step_height = 0.1  # fixed step height
 step_length = 0.05
 nb_steps = 6  # number of desired walking steps
 
@@ -56,8 +56,8 @@ kp_posture = 1.0                # proportional gain of the postural task
 w_posture = 1e-3                # weight of the postural task
 
 #swing foot task
-kp_foot = 100.0                 # proportional gain of the swing foot task
-w_foot = 1.0                    # weight of the swing foot task
+kp_foot = 300.0                 # proportional gain of the swing foot task
+w_foot = 10.0                    # weight of the swing foot task
 
 #orientation task
 base_frame_name = "base_link"   # frame used to keep the trunk level (roll/pitch)
