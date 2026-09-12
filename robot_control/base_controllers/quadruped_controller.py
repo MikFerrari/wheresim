@@ -465,30 +465,15 @@ class QuadrupedController(BaseController):
         self.pid.setPDjoints(self.kp_j, self.kd_j, self.ki_j)
 
         # freeze gravity before teleporting so the robot cannot start falling before joints/base are in place
-        self.freezeBase(True, basePoseW=basePoseDes, baseTwistW=baseTwistDes)
+        self.freezeBase(False, basePoseW=basePoseDes, baseTwistW=baseTwistDes)
         gazebo_interface.set_model_configuration_client(self.robot_name, '', self.joint_names, self.qj_0, '/gazebo')
         self.send_des_jstate(self.q_des, self.qd_des, self.tau_ffwd)
-
-        # give the impedance controller a few cycles to catch up with the teleported state, re-asserting
-        # the base pose if it drifted (e.g. contact impacts right after teleport); bounded by settle_timeout
-        # so a stuck convergence (e.g. unreachable pose) can't hang the caller forever
-        start_t = ros.get_time()
-        while ros.get_time() - start_t < settle_timeout:
-            self.updateKinematics()
-            self.send_des_jstate(self.q_des, self.qd_des, self.tau_ffwd)
-            if np.linalg.norm(self.u.linPart(self.basePoseW - basePoseDes)) > 0.05:
-                self.freezeBase(True, basePoseW=basePoseDes, baseTwistW=baseTwistDes)
-            if np.linalg.norm(self.q - self.q_des) < 0.01 and np.linalg.norm(self.qd) < 0.01:
-                break
-            self.rate.sleep()
-
         # re-anchor the leg odometry to the teleported feet, otherwise it keeps using the pre-reset ones
         self.leg_odom.reset(np.hstack([self.u.linPart(basePoseDes), self.quaternion, self.q]))
         self.imu_utils.baseLinTwistImuW = self.u.linPart(baseTwistDes).copy()
-
         # release (or keep frozen, for debug/tasks that need it) gravity now that the robot is settled
-        self.freezeBase(freeze_base, basePoseW=basePoseDes, baseTwistW=baseTwistDes)
-
+        self.freezeBase(False, basePoseW=basePoseDes, baseTwistW=baseTwistDes)
+        self.updateKinematics()
 
     def Hframe2World(self, poseH, dposeH=None, ddposeH=None):
         # returns variables from Hframe to World frame
@@ -1136,7 +1121,10 @@ if __name__ == '__main__':
         if use_joy:
             joy = JoyManager("js1", end_scale = 0.2)
 
-        p.startupProcedure()
+        p.resetRobot(basePoseDes=np.array([-0.204, -0.0,  0.356, -0.0, -0.0, 0.0]))
+        #p.startupProcedure()
+        #p.setSimSpeed(dt_sim=0.001, max_update_rate=100, iters=1500)
+
         if p.state_estimation=='pronto':
             launchFileNode("mocap_qualisys", "qualisys.launch")
             launchFileNode("pronto_aliengo", "pronto_aliengo.launch", additional_args=['pronto_conf:='+p.pronto_config,
