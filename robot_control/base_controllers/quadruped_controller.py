@@ -1163,7 +1163,8 @@ if __name__ == '__main__':
                         bag_name="test_" + format_date + ".bag", record_from_startup_=False)
             p.recorder.start_recording_srv()
         if use_joy:
-            joy = JoyManager("js1")
+            joy = JoyManager("js1", end_scale = 0.2)
+
         p.startupProcedure()
         if p.state_estimation=='pronto':
             launchFileNode("mocap_qualisys", "qualisys.launch")

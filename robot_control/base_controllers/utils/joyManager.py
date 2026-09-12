@@ -7,7 +7,7 @@ from base_controllers.utils.common_functions import checkRosMaster
 
 
 class JoyManager:
-    def __init__(self, joy_port="js1"):
+    def __init__(self, joy_port="js1", end_scale = 1.0):
         """
         Manages joystick input by subscribing to /joy.
         Always restarts the joy_node to ensure a fresh connection.
@@ -16,6 +16,7 @@ class JoyManager:
         self.latest_msg = Joy()
         self.sub = rospy.Subscriber("/joy", Joy, self._joy_callback)
         self._restart_joy_node()
+        self.end_scale = end_scale
 
 
         rospy.loginfo("JoyManager initialized: subscribed to /joy")
@@ -94,6 +95,14 @@ class JoyManager:
 
         except IndexError:
             return np.zeros(4), np.zeros(4, dtype=int)
+
+    def getVelocityReferences(self):
+        axes, buttons = self.get_commands()
+        # use a scaling to make the joy input less reactive
+        long_x = self.end_scale * axes[0]
+        long_y = self.end_scale * axes[1]
+        rot_z = self.end_scale * axes[2]
+        return long_x, long_y, rot_z, buttons
 
     def get_start_button(self):
         """
