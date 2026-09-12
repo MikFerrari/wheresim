@@ -12,7 +12,7 @@ class SrbFootstepOcp:
 
     def solve(self, x_init, p_init, wc, wdc, wu, wp, c_ref, dc_ref, hip_pos, gait_pattern):
         # p_init = [px0, py0, px1, py1] = initial position of the two feet on the ground
-        # hip_pos: dictionary (with keys "FL", "FR", "RL", "RR") containing XY pos of the hips w.r.t. the CoM
+        # hip_pos: dictionary (keyed by ee_frame name, e.g. "lf_foot") containing XY pos of the hips w.r.t. the CoM
         # gait_pattern: list containing names of support feet for every time step
 
         self.opti = casadi.Opti()

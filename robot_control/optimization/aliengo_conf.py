@@ -1,9 +1,12 @@
 import numpy as np
 from os import getenv as _getenv
 from os import path as _path
+from base_controllers import params as _params
 
-# The online URDF of Aliengo has unbounded joints, which are represented using sine and cosine of the joint angle
-foot_names = ["FL", "FR", "RL", "RR"]
+# foot identifiers used throughout the LIPM/TSID pipeline are just the URDF contact
+# frame names (also the canonical list in params.py), e.g. "lf_foot": no separate
+# FL/FR/RL/RR naming scheme to keep in sync with it
+ee_frames = _params.robot_params['aliengo']['ee_frames']  # ['lf_foot', 'lh_foot', 'rf_foot', 'rh_foot']
 
 # configuration for LIPM trajectory optimization
 # ----------------------------------------------
@@ -12,7 +15,6 @@ wc = 0      # CoM position error squared cost weight
 wdc = 1e-1  # CoM velocity error squared cost weight
 wp = 1e-2   # footstep distance to hip cost weight
 g = 9.81    # norm of the gravity vector
-foot_step_0 = ["FL", "RR"]  # initial foot steps on the ground
 dt_mpc = 0.1  # sampling time interval
 T_step = 0.4  # time needed for every step
 step_height = 0.1  # fixed step height
@@ -25,8 +27,6 @@ dt = 0.002
 
 # configuration for the TSID whole-body controller
 # ----------------------------------------------
-# mapping between the LIP footstep names and the urdf contact frame names
-foot_frames = {"FL": "lf_foot", "FR": "rf_foot", "RL": "lh_foot", "RR": "rh_foot"}
 
 urdf = _path.join(_getenv('LOCOSIM_DIR', ''), 'robot_urdf', 'aliengo.urdf')
 path = _path.join(_getenv('LOCOSIM_DIR', ''), 'robot_urdf')

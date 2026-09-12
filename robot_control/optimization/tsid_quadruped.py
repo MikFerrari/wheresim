@@ -30,7 +30,7 @@ class TsidQuadruped:
         robot = self.robot
         self.model = robot.model()
 
-        for frame_name in conf.foot_frames.values():
+        for frame_name in conf.ee_frames:
             assert self.model.existFrame(frame_name), f"frame {frame_name} not found in the urdf"
 
         formulation = tsid.InverseDynamicsFormulationAccForce("tsid", robot, False)
@@ -39,7 +39,8 @@ class TsidQuadruped:
 
         # one point contact per foot -----------------------------------
         self.contacts, self.contact_active, self.foot_frame_id = {}, {}, {}
-        for foot_name, frame_name in conf.foot_frames.items():
+        for frame_name in conf.ee_frames:
+            foot_name = frame_name
             frame_id = self.model.getFrameId(frame_name)
             self.foot_frame_id[foot_name] = frame_id
 
@@ -84,7 +85,8 @@ class TsidQuadruped:
 
         # one 3d (position only) swing task per foot -----------------------
         self.footTasks, self.footTraj, self.footSample = {}, {}, {}
-        for foot_name, frame_name in conf.foot_frames.items():
+        for frame_name in conf.ee_frames:
+            foot_name = frame_name
             footTask = tsid.TaskSE3Equality("task-" + foot_name + "-foot", robot, frame_name)
             footTask.setKp(conf.kp_foot * np.ones(6))
             footTask.setKd(2.0 * np.sqrt(conf.kp_foot) * np.ones(6))

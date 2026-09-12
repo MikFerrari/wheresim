@@ -994,18 +994,14 @@ class QuadrupedController(BaseController):
 
     def getCoMReference(self, com_conf, robot_height, com_initial_pos_xy, com_initial_vel_xy):
         # p_init = [px0, py0, px1, py1] = initial position of the two feet on the ground
-        # hip_pos: dictionary (with keys "FL", "FR", "RL", "RR") containing XY pos of the hips w.r.t. the CoM
+        # hip_pos: dictionary (keyed by ee_frame name, e.g. "lf_foot") containing XY pos of the hips w.r.t. the CoM
         # gait_pattern: list containing names of support feet for every time step
 
-        hip_joint_names = {"FL": "lf_haa_joint", "FR": "rf_haa_joint", "RL": "lh_haa_joint", "RR": "rh_haa_joint"}
         hip_joint_ids, hip_pos = {}, {}
-        for k in hip_joint_names.keys():
-            hip_joint_ids[k] = self.robot.model.getJointId(hip_joint_names[k])
-            hip_pos[k] = self.robot.placement(self.neutral_fb_jointstate, hip_joint_ids[k]).translation[:2]
-        # use the actual foot placement (base frame), not the HAA joint position: the HAA joint
-            # foot_leg_names = {"FL": "LF", "FR": "RF", "RL": "LH", "RR": "RH"}
-            # hip_pos = {k: self.B_contacts[self.u.leg_map[v]][:2].copy() for k, v in foot_leg_names.items()}
-
+        for foot_frame in com_conf.ee_frames:
+            haa_joint_name = foot_frame.replace('_foot', '_haa_joint')
+            hip_joint_ids[foot_frame] = self.robot.model.getJointId(haa_joint_name)
+            hip_pos[foot_frame] = self.robot.placement(self.neutral_fb_jointstate, hip_joint_ids[foot_frame]).translation[:2]
 
         # MPC Parameters:
         nb_dt_per_step = int(round(com_conf.T_step / com_conf.dt_mpc))
@@ -1015,7 +1011,7 @@ class QuadrupedController(BaseController):
         x_0 = np.array([com_initial_pos_xy[0], com_initial_pos_xy[1], com_initial_vel_xy[0], com_initial_vel_xy[1]])
 
         #initial position of the feet (decide with which feet to start)
-        p_0 = np.concatenate([x_0[:2] + hip_pos["FL"], x_0[:2] + hip_pos["RR"]])
+        p_0 = np.concatenate([x_0[:2] + hip_pos["lf_foot"], x_0[:2] + hip_pos["rh_foot"]])
 
         # compute Com reference trajectories:
         C_ref = np.zeros((2, N + 1))  # not used
@@ -1023,8 +1019,8 @@ class QuadrupedController(BaseController):
         DC_ref = np.vstack([DC_ref, np.zeros(N + 1)])
         gait_pattern = []
         while (len(gait_pattern) < N + 1):
-            gait_pattern += nb_dt_per_step * [["FL", "RR"]]
-            gait_pattern += nb_dt_per_step * [["FR", "RL"]]
+            gait_pattern += nb_dt_per_step * [["lf_foot", "rh_foot"]]
+            gait_pattern += nb_dt_per_step * [["rf_foot", "lh_foot"]]
 
         ocp = SrbFootstepOcp(com_conf.dt_mpc, N, robot_height)
 
@@ -1062,7 +1058,7 @@ class QuadrupedController(BaseController):
         N = com_state.shape[1] - 1  # number of time steps for traj-opt
         N_ctrl = int((N * com_conf.dt_mpc) / dt_ctrl)  # number of time steps for control
         x, dx, ddx = {}, {}, {}
-        for foot_name in com_conf.foot_names:
+        for foot_name in com_conf.ee_frames:
             if (foot_name in gait_pattern[0]):
                 shift = 0
                 initial_phase = "stance"
@@ -1193,7 +1189,6 @@ if __name__ == '__main__':
         p.updateKinematics()
         tsid_quadruped = TsidQuadruped(com_optim_conf, p.configuration.copy(), p.gen_velocities.copy())
         foot_swing_thresh = 1e-4  # foot z-reference above this -> foot is swinging
-        foot_to_legmap = {"FL": "LF", "FR": "RF", "RL": "LH", "RR": "RH"}
 
         counter = 0
         p.pid.setPDs(0, 0,0 )
@@ -1284,8 +1279,8 @@ if __name__ == '__main__':
                     tsid_quadruped.set_com_ref(com_ref[:, idx], dcom_ref[:, idx], ddcom_ref[:, idx])
 
 
-                    for foot_name in com_optim_conf.foot_names:
-                        leg = p.u.leg_map[foot_to_legmap[foot_name]]
+                    for foot_name in com_optim_conf.ee_frames:
+                        leg = p.u.leg_map[foot_name[:2].upper()]
                         # feed the planned foot trajectory into the des-foot log (plotContacts), since
                         # this walking loop never otherwise touches p.W_contacts_des during locomotion
                         p.W_contacts_des[leg] = x_ref[foot_name][:, idx]
@@ -1308,8 +1303,8 @@ if __name__ == '__main__':
                         print(colored(f"QP problem could not be solved! Error code: {sol.status}", "red"))
                     else:
                         p.tau_ffwd = tsid_quadruped.get_torques(sol)
-                        for foot_name in com_optim_conf.foot_names:
-                            leg = p.u.leg_map[foot_to_legmap[foot_name]]
+                        for foot_name in com_optim_conf.ee_frames:
+                            leg = p.u.leg_map[foot_name[:2].upper()]
                             p.u.setLegJointState(leg, tsid_quadruped.get_contact_force(foot_name, sol), p.grForcesW_des)
 
 
@@ -1330,7 +1325,7 @@ if __name__ == '__main__':
     if conf.plotting:
         plotJoint('position', time_log=p.time_log, q_log=p.q_log, q_des_log=p.q_des_log, sharex=True, sharey=False,
                   start=0, end=-1)
-        plotJoint('torque', time_log=p.time_log, tau_des_log=p.tau_ffwd_log)
+        #plotJoint('torque', time_log=p.time_log, tau_des_log=p.tau_ffwd_log)
         plotFrame('position', time_log=p.time_log, des_Pose_log=p.comPoseW_des_log, Pose_log=p.comPoseW_log,
                   title='CoM', frame='W', sharex=True, sharey=False, start=0, end=-1)
         plotFrame('velocity', time_log=p.time_log, des_Twist_log=p.comTwistW_des_log, Twist_log=p.comTwistW_log,
