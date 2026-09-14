@@ -294,6 +294,7 @@ class QuadrupedController(BaseController):
         self.W_vel_contacts_des_log = np.full((3 * self.robot.nee, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
 
         self.contact_state_log = np.full((self.robot.nee, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
+        self.stance_legs_log = np.full((self.robot.nee, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
 
         self.baseLinAccW_log = np.full((3, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
         self.baseLinAccB_log = np.full((3, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
@@ -357,6 +358,7 @@ class QuadrupedController(BaseController):
         self.grForcesW_gt_log[:, self.log_counter] = self.grForcesW_gt
         self.grForcesB_log[:, self.log_counter] = self.grForcesB
         self.contact_state_log[:, self.log_counter] = self.contact_state
+        self.stance_legs_log[:, self.log_counter] = self.stance_legs
 
         self.baseLinAccW_log[:, self.log_counter] = self.baseLinAccW
         self.baseLinAccB_log[:, self.log_counter] = self.baseLinAccB
@@ -555,9 +557,10 @@ class QuadrupedController(BaseController):
         self.basePoseW_des[:3] -= b_R_w_des.T @ self.comPosB
 
         self.baseTwistW_des = self.comTwistW_des.copy()
-        print(self.baseTwistW_des )
-        self.baseTwistW_des[:3] -= b_R_w_des.T @ (omega_skew @ self.comPosB + self.comVelB)
-        print(self.basePoseW_des)
+        # NOTE: comPosB must be rotated to world BEFORE crossing it with the (world-frame)
+        # angular velocity: omega_skew @ (R @ comPosB), not R @ (omega_skew @ comPosB) -
+        # the rotation and the cross product do not commute
+        self.baseTwistW_des[:3] -= omega_skew @ (b_R_w_des.T @ self.comPosB) + b_R_w_des.T @ self.comVelB
 
     def Wbase2Bcontact_des(self):
         b_R_w_des = pin.rpy.rpyToMatrix(self.u.angPart(self.basePoseW_des)).T
@@ -997,11 +1000,10 @@ class QuadrupedController(BaseController):
         # hip_pos: dictionary (keyed by ee_frame name, e.g. "lf_foot") containing XY pos of the hips w.r.t. the CoM
         # gait_pattern: list containing names of support feet for every time step
 
-        hip_joint_ids, hip_pos = {}, {}
-        for foot_frame in com_conf.ee_frames:
-            haa_joint_name = foot_frame.replace('_foot', '_haa_joint')
-            hip_joint_ids[foot_frame] = self.robot.model.getJointId(haa_joint_name)
-            hip_pos[foot_frame] = self.robot.placement(self.neutral_fb_jointstate, hip_joint_ids[foot_frame]).translation[:2]
+        # use the actual foot placement (base frame), not the HAA joint position: the HAA joint
+        # is ~0.083 m medial to the standing foot (the hfe joint's lateral offset), so anchoring
+        # footholds to it pulls every foothold inward toward the centerline
+        hip_pos = {foot_frame: self.B_contacts[i][:2].copy() for i, foot_frame in enumerate(com_conf.ee_frames)}
 
         # MPC Parameters:
         nb_dt_per_step = int(round(com_conf.T_step / com_conf.dt_mpc))
@@ -1081,68 +1083,8 @@ class QuadrupedController(BaseController):
 
         return com,  dcom, ddcom, x, dx, ddx, cop
 
-if __name__ == '__main__':
-    p = QuadrupedController('aliengo')
-    world_name = 'fast.world'
-    use_gui = False
-    p.state_estimation = 'ground_truth' # 'odometry',  'pronto', 'ground_truth' (only sim), 'mocap'
-    rl_control = 'none' #'none', 'sensor_based' (Giulio), 'state_est_based' (Riccardo)
-    # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
-    rl_use_nn_se = p.state_estimation != 'pronto'
-    use_joy = True
-    generate_reference = False
-    p.SAVE_BAG = False  #
-    if p.robot_name == 'go2':
-        p.custom_locosim_launch_file = True
 
-    if rl_control == 'state_est_based':
-        if p.real_robot and (p.state_estimation != 'pronto' and p.state_estimation != 'pronto'):
-            print(colored("RL is state_est based need to start state estimation!","red"))
-            sys.exit()
-        rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=rl_use_nn_se, debug=True)
-    if rl_control == 'sensor_based':
-        rl_controller = LocomotionPolicyWrapper(use_state_est=True, dt = p.dt)
-
-    try:
-
-        p.startController(world_name=world_name,
-                          use_ground_truth_contacts=True,
-                          additional_args=['gui:='+str(use_gui),
-                                           'go0_conf:=standDown',
-                                           'rviz:=true',
-                                           *(['task_period:=0.002'] if p.real_robot else [])]) #change task period to 500Hz instead of 1000Hz for real robot
-        if p.SAVE_BAG:
-            now = datetime.now()
-            format_date = now.strftime("%Y-%m-%d-%H-%M-%S")
-            p.recorder = RosbagControlledRecorder(
-                topics='/aliengo/joint_states /aliengo/trunk_imu /aliengo/ground_truth /rl_ref_vel /tf /tf_static',
-                        bag_name="test_" + format_date + ".bag", record_from_startup_=False)
-            p.recorder.start_recording_srv()
-        if use_joy:
-            joy = JoyManager("js1", end_scale = 0.2)
-
-        p.resetRobot(basePoseDes=np.array([0.0, -0.0,  0.356, -0.0, -0.0, 0.0]))
-        #p.startupProcedure()
-        # to reduce simulation frequency
-        p.setSimSpeed(dt_sim=0.001, max_update_rate=100, iters=1500)
-
-        if p.state_estimation=='pronto':
-            launchFileNode("mocap_qualisys", "qualisys.launch")
-            launchFileNode("pronto_aliengo", "pronto_aliengo.launch", additional_args=['pronto_conf:='+p.pronto_config,
-                                                                                       'use_sim_time:='+str(not p.real_robot)])
-        if rl_control != 'none':
-            p.pid.setPDjoints(rl_controller.kp, rl_controller.kd, np.full(12,0))
-        p.counter = 0
-        p.startTime = p.time
-
-        if generate_reference:
-            p.ref_gen = QuadrupedTasks(task='pushup', robot_conf=conf.robot_params[p.robot_name], gui=True, quadruped=p)
-            p.ref_gen.startUp(p.time)
-
-        #compute robot reference
-        com_state, foot_steps, cop,  gait_pattern = p.getCoMReference(com_optim_conf, p.robot_height, p.comPoseW[:2], p.comTwistW[:2])
-        com_ref,  dcom_ref, ddcom_ref, x_ref, dx_ref, ddx_ref, cop_ref = p.generateInterpolatedReference(com_optim_conf, com_state, foot_steps, cop,   gait_pattern, p.robot_height)
-
+    def plotReference(self):
         if conf.plotting:
             N = foot_steps.shape[1]
             plt.figure()
@@ -1184,14 +1126,96 @@ if __name__ == '__main__':
             plt.grid(True)
             plt.pause(0.001)
 
+if __name__ == '__main__':
+    p = QuadrupedController('aliengo')
+    world_name = 'fast.world'
+    use_gui = False
+    p.state_estimation = 'ground_truth' # 'odometry',  'pronto', 'ground_truth' (only sim), 'mocap'
+    rl_control = 'none' #'none',  'state_est_based'
+    # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
+    rl_use_nn_se = p.state_estimation != 'pronto'
+    p.controller_type = 'tsid' # 'quasi-static', 'tsid'
 
-        # TSID whole-body controller, initialized with the current (standing) robot state
+    use_joy = True
+    generate_reference = False
+    p.SAVE_BAG = False  #
+    if p.robot_name == 'go2':
+        p.custom_locosim_launch_file = True
+
+    if rl_control == 'state_est_based':
+        rl_controller = RlVelocityController(p.robot_name, p.dt, use_nn_se=rl_use_nn_se, debug=True)
+
+    try:
+        p.startController(world_name=world_name,
+                          use_ground_truth_contacts=True,
+                          additional_args=['gui:='+str(use_gui),
+                                           'go0_conf:=standDown',
+                                           'rviz:=true',
+                                           *(['task_period:=0.002'] if p.real_robot else [])]) #change task period to 500Hz instead of 1000Hz for real robot
+        if p.SAVE_BAG:
+            now = datetime.now()
+            format_date = now.strftime("%Y-%m-%d-%H-%M-%S")
+            p.recorder = RosbagControlledRecorder(
+                topics='/aliengo/joint_states /aliengo/trunk_imu /aliengo/ground_truth /rl_ref_vel /tf /tf_static',
+                        bag_name="test_" + format_date + ".bag", record_from_startup_=False)
+            p.recorder.start_recording_srv()
+        if use_joy:
+            joy = JoyManager("js1", end_scale = 0.2)
+
+        #p.resetRobot(basePoseDes=np.array([0.0, -0.0,  0.356, -0.0, -0.0, 0.0]))
+        p.startupProcedure()
+        # to reduce simulation frequency
+        p.setSimSpeed(dt_sim=0.001, max_update_rate=100, iters=1500)
+
+        if p.state_estimation=='pronto':
+            launchFileNode("mocap_qualisys", "qualisys.launch")
+            launchFileNode("pronto_aliengo", "pronto_aliengo.launch", additional_args=['pronto_conf:='+p.pronto_config,
+                                                                                       'use_sim_time:='+str(not p.real_robot)])
+        if rl_control != 'none':
+            p.pid.setPDjoints(rl_controller.kp, rl_controller.kd, np.full(12,0))
+        else:
+            if p.controller_type == 'quasi-static':
+                # softer "wbc" gains since tau_ffwd already supplies most of the required torque;
+                # the same PD tracks q_des/qd_des on every joint, computed below by Wcom2Joints_des()
+                # for both stance legs (whole-body IK, feet held planted) and swing legs (foot-trajectory IK)
+                p.pid.setPDjoints(p.kp_wbc_j, p.kd_wbc_j, p.ki_wbc_j)
+            if p.controller_type == 'tsid':
+                # TSID whole-body controller (kept for reference / easy switch-back, see the matching
+                tsid_quadruped = TsidQuadruped(com_optim_conf, p.configuration.copy(), p.gen_velocities.copy())
+                # with TSID (pure feedforward torque from the QP), the low-level joint PD must be off instead:
+                p.pid.setPDs(0, 0, 0)
+
+        p.startTime = p.time
+        if generate_reference:
+            p.ref_gen = QuadrupedTasks(task='pushup', robot_conf=conf.robot_params[p.robot_name], gui=True, quadruped=p)
+            p.ref_gen.startUp(p.time)
+
+        #compute robot reference
+        com_state, foot_steps, cop,  gait_pattern = p.getCoMReference(com_optim_conf, p.robot_height, p.comPoseW[:2], p.comTwistW[:2])
+        com_ref,  dcom_ref, ddcom_ref, x_ref, dx_ref, ddx_ref, cop_ref = p.generateInterpolatedReference(com_optim_conf, com_state, foot_steps, cop,   gait_pattern, p.robot_height)
+
+        # plot references
+        p.plotReference()
+
+        # quasi-static CoM controller (p.wbc.computeWBC) + per-leg joint PD running in parallel,
+        # initialized with the current (standing) robot state
         p.updateKinematics()
-        tsid_quadruped = TsidQuadruped(com_optim_conf, p.configuration.copy(), p.gen_velocities.copy())
+
         foot_swing_thresh = 1e-4  # foot z-reference above this -> foot is swinging
 
         counter = 0
-        p.pid.setPDs(0, 0,0 )
+        # Wbase2Joints_des()/Wcom2Joints_des() integrate q_des open-loop between IK solves, so
+        # prime them with the actual state before the first call (see its docstring)
+        p.q_des = p.q.copy()
+        p.qd_des = np.zeros(p.robot.na)
+        # no orientation/angular-velocity reference from the (2d) LIPM plan: keep the trunk level
+        p.comPoseW_des[3:] = 0.
+        p.comTwistW_des[3:] = 0.
+        p.comAccW_des[:] = 0.
+        # robot starts standing on all 4 feet: latch their current position as the stance target
+        p.stance_legs[:] = True
+        for leg in range(4):
+            p.W_contacts_des[leg] = p.W_contacts[leg].copy()
 
 
         print(colored(f"Starting main loop  T =  {p.time}", "blue"))
@@ -1226,7 +1250,6 @@ if __name__ == '__main__':
                         
                 p.baseTwistW_des[:3] = p.b_R_w.T @ np.append(rl_controller.velocity_cmd[:2], 0.0)
                 p.baseTwistW_des[5] = rl_controller.velocity_cmd[2]
-
                 if rl_control == 'state_est_based':
                     # Compute observations for the policy
                     # Disable the lin_vel_b and use lin_acc_b observation if using NN SE
@@ -1239,7 +1262,6 @@ if __name__ == '__main__':
                     else:
                         lin_acc_b = None
                         lin_vel_b = p.b_R_w.dot(p.baseTwistW[:3])
-
                     ang_vel_b = p.b_R_w.dot(p.baseTwistW[3:6])
                     proj_gravity = p.b_R_w.dot(np.array([0,0,-1]))
 
@@ -1260,6 +1282,7 @@ if __name__ == '__main__':
                     idx = min(counter, com_ref.shape[1] - 1)
                     p.comPoseW_des[:3] = com_ref[:, idx]
                     p.comTwistW_des[:3] = dcom_ref[:, idx]
+                    p.comAccW_des[:3] = ddcom_ref[:, idx]
 
 
                     # cop_ref
@@ -1273,40 +1296,105 @@ if __name__ == '__main__':
                     if counter < com_ref.shape[1] - 1:
                         counter += 1
 
-                    #####################################
-                    # TSID whole-body controller (CoM task + swing-foot tasks + point contacts)
-                    #####################################
-                    tsid_quadruped.set_com_ref(com_ref[:, idx], dcom_ref[:, idx], ddcom_ref[:, idx])
+                    if p.controller_type == 'tsid':
+                        ####################################
+                        # TSID whole-body controller (CoM task + swing-foot tasks + point contacts)
+                        # kept for reference / easy switch-back: uncomment this block (and the
+                        # tsid_quadruped instantiation above) and comment out the quasi-static block
+                        # below to use TSID again instead
+                        ####################################
+                        tsid_quadruped.set_com_ref(com_ref[:, idx], dcom_ref[:, idx], ddcom_ref[:, idx])
 
-
-                    for foot_name in com_optim_conf.ee_frames:
-                        leg = p.u.leg_map[foot_name[:2].upper()]
-                        # feed the planned foot trajectory into the des-foot log (plotContacts), since
-                        # this walking loop never otherwise touches p.W_contacts_des during locomotion
-                        p.W_contacts_des[leg] = x_ref[foot_name][:, idx]
-                        #planned liftoff
-                        is_swinging = x_ref[foot_name][2, idx] > foot_swing_thresh
-                        if is_swinging:
-                            tsid_quadruped.remove_contact(foot_name, transition_time=com_optim_conf.contact_transition_time)
-                        # haptic touchdown
-                        elif p.contact_state[leg]:
-                            # plan says stance, but only rigidify the contact once the
-                            # foot is actually sensed on the ground (avoids commanding a
-                            # ground reaction force at a foot that hasn't touched down yet)
-                            tsid_quadruped.add_contact(foot_name)
-                        tsid_quadruped.set_foot_3d_ref(foot_name, x_ref[foot_name][:, idx],
-                                                        dx_ref[foot_name][:, idx], ddx_ref[foot_name][:, idx])
-
-                    HQPData = tsid_quadruped.compute_problem(float(p.time), p.configuration, p.gen_velocities)
-                    sol = tsid_quadruped.solve(HQPData)
-                    if sol.status != 0:
-                        print(colored(f"QP problem could not be solved! Error code: {sol.status}", "red"))
-                    else:
-                        p.tau_ffwd = tsid_quadruped.get_torques(sol)
                         for foot_name in com_optim_conf.ee_frames:
                             leg = p.u.leg_map[foot_name[:2].upper()]
-                            p.u.setLegJointState(leg, tsid_quadruped.get_contact_force(foot_name, sol), p.grForcesW_des)
+                            # feed the planned foot trajectory into the des-foot log (plotContacts), since
+                            # this walking loop never otherwise touches p.W_contacts_des during locomotion
+                            p.W_contacts_des[leg] = x_ref[foot_name][:, idx]
+                            #planned liftoff
+                            is_swinging = x_ref[foot_name][2, idx] > foot_swing_thresh
+                            #haptic TD
+                            # if is_swinging:
+                            #     p.stance_legs[leg] = False
+                            #     tsid_quadruped.remove_contact(foot_name, transition_time=com_optim_conf.contact_transition_time)
+                            # # haptic touchdown
+                            # elif p.contact_state[leg]:
+                            #     # plan says stance, but only rigidify the contact once the
+                            #     # foot is actually sensed on the ground (avoids commanding a
+                            #     # ground reaction force at a foot that hasn't touched down yet)
+                            #     p.stance_legs[leg] = True
+                            #     tsid_quadruped.add_contact(foot_name)
 
+                            # non haptic TD: plan says stance, but only latch the (fixed)
+                            if is_swinging:
+                                p.stance_legs[leg] = False
+                                # swing leg: track the planned foot trajectory (world frame)
+                                tsid_quadruped.remove_contact(foot_name,  transition_time=com_optim_conf.contact_transition_time)
+                            else:
+                                # plan says stance but touchdown not sensed yet: keep reaching for the
+                                # last commanded (swing) target instead of freezing the leg mid-air
+                                p.stance_legs[leg] = True
+                                tsid_quadruped.add_contact(foot_name)
+
+                            tsid_quadruped.set_foot_3d_ref(foot_name, x_ref[foot_name][:, idx],
+                                                            dx_ref[foot_name][:, idx], ddx_ref[foot_name][:, idx])
+
+                        HQPData = tsid_quadruped.compute_problem(float(p.time), p.configuration, p.gen_velocities)
+                        sol = tsid_quadruped.solve(HQPData)
+                        if sol.status != 0:
+                            print(colored(f"QP problem could not be solved! Error code: {sol.status}", "red"))
+                        else:
+                            p.tau_ffwd = tsid_quadruped.get_torques(sol)
+                            for foot_name in com_optim_conf.ee_frames:
+                                leg = p.u.leg_map[foot_name[:2].upper()]
+                                p.u.setLegJointState(leg, tsid_quadruped.get_contact_force(foot_name, sol), p.grForcesW_des)
+
+                    else:
+                        #####################################
+                        # quasi-static CoM controller: stance legs are tracked in parallel by a joint PD
+                        # (q_des/qd_des from the whole-body IK below) plus p.wbc.computeWBC's ffwd torque;
+                        # swing legs are pure joint-PD tracking of the planned foot trajectory (computeWBC
+                        # zeroes out their columns, so they only get the constant h_joints bias, not a real ffwd)
+                        #####################################
+                        for foot_name in com_optim_conf.ee_frames:
+                            leg = p.u.leg_map[foot_name[:2].upper()]
+                            # planned liftoff
+                            is_swinging = x_ref[foot_name][2, idx] > foot_swing_thresh
+                            #haptic TD
+                            # if is_swinging:
+                            #     p.stance_legs[leg] = False
+                            #     # swing leg: track the planned foot trajectory (world frame)
+                            #     p.W_contacts_des[leg] = x_ref[foot_name][:, idx]
+                            # elif p.contact_state[leg]:
+                            #     # haptic touchdown: plan says stance, but only latch the (fixed) stance
+                            #     # target once the foot is actually sensed on the ground, and only once,
+                            #     # otherwise it would just track the (possibly slipping) actual position
+                            #     if not p.stance_legs[leg]:
+                            #         p.W_contacts_des[leg] = p.W_contacts[leg].copy()
+                            #     p.stance_legs[leg] = True
+                            # else:
+                            #     # plan says stance but touchdown not sensed yet: keep reaching for the
+                            #     # last commanded (swing) target instead of freezing the leg mid-air
+                            #     p.stance_legs[leg] = False
+
+                            #non haptic TD: plan says stance, but only latch the (fixed)
+                            if is_swinging:
+                                p.stance_legs[leg] = False
+                                # swing leg: track the planned foot trajectory (world frame)
+                                p.W_contacts_des[leg] = x_ref[foot_name][:, idx]
+                            else:
+                                # plan says stance but touchdown not sensed yet: keep reaching for the
+                                # last commanded (swing) target instead of freezing the leg mid-air
+                                p.stance_legs[leg] = True
+
+                        # map CoM pose/twist + per-foot targets above into q_des/qd_des for all 12 joints
+                        p.Wcom2Joints_des()
+
+                        p.tau_ffwd, p.grForcesW_des = p.wbc.computeWBC(p.W_contacts, p.wJ, p.h_joints, p.basePoseW,
+                                                                     p.comPoseW, p.baseTwistW, p.comTwistW,
+                                                                     p.comPoseW_des, p.comTwistW_des, p.comAccW_des,
+                                                                     p.centroidalInertiaB,
+                                                                     comControlled=True, type='projection',
+                                                                     stance_legs=p.stance_legs)
 
                 p.send_command(p.q_des, p.qd_des, p.alphaCollapse*p.tau_ffwd, log_data_in_send_command=True)
 
@@ -1346,6 +1434,19 @@ if __name__ == '__main__':
         plt.axis('equal')
         plt.legend()
         plt.grid(True)
+
+        fig = plt.figure()
+        fig.suptitle('Stance legs (planned)', fontsize=20)
+        leg_names = ['LF', 'LH', 'RF', 'RH']
+        for leg in range(4):
+            ax = plt.subplot(4, 1, leg + 1, sharex=fig.axes[0] if leg > 0 else None)
+            plt.plot(p.time_log, p.stance_legs_log[leg, :], color='black', lw=1)
+            plt.ylabel(leg_names[leg])
+            plt.ylim([-0.2, 1.2])
+            plt.yticks([0, 1], ['swing', 'stance'])
+            plt.grid(True)
+        plt.xlabel('Time [s]')
+
         plt.ion()
         plt.show()
 
