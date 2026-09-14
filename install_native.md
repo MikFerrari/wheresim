@@ -2,7 +2,7 @@
 
 ### UBUNTU VERSIONS:
 
-Locosim is compatible with Ubuntu 18/20. The installation instructions have been generalized accordingly. You need replace four strings (PYTHON_PREFIX, PYTHON_VERSION, PIP_PREFIX, ROS_VERSION) with the appropriate values according to your operating systems as follows:
+Wheresim is compatible with Ubuntu 18/20. The installation instructions have been generalized accordingly. You need replace four strings (PYTHON_PREFIX, PYTHON_VERSION, PIP_PREFIX, ROS_VERSION) with the appropriate values according to your operating systems as follows:
 
 | Ubuntu 18:                   | **Ubuntu 20**:               |
 | ---------------------------- | ---------------------------- |
@@ -12,7 +12,8 @@ Locosim is compatible with Ubuntu 18/20. The installation instructions have been
 | PIP_PREFIX = pip3            | PIP_PREFIX = pip3            |
 | ROS_VERSION = bionic         | ROS_VERSION = noetic         |
 
-**NOTE:** ROS is no longer supported (only ROS2 Humble) on Ubuntu 22 hence is not possible to install Locosim on Ubuntu 22.
+**NOTE:** ROS is no longer supported (only ROS2 Humble) still it is possible to install Wheresim on Ubuntu 22 using this repo https://ros.packages.techfak.net.
+.
 
 ### Install ROS 
 
@@ -72,9 +73,7 @@ sudo apt-get install ros-ROS_VERSION-gazebo-ros
 sudo apt-get install ros-ROS_VERSION-controller-manager
 ```
 
-```
-sudo apt install ros-ROS_VERSION-joint-trajectory-controller
-```
+
 
 ### Pinocchio stuff
 
@@ -144,44 +143,6 @@ sudo apt-get install PYTHON_PREFIX-termcolor
 sudo apt install python3-pip
 ```
 
-```
-PIP_PREFIX install cvxpy==1.2.0
-```
-
-### **Support for Realsense camera (simulation)**
-
-This packages are needed if you want to see the PointCloud published by a realsense camera attached at the endeffector. To activate it, you should load the xacro of the ur5 with the flag "vision_sensor:=true". 
-
-```
-sudo apt-get install ros-ROS_VERSION-openni2-launch
-```
-
-```
-sudo apt-get install ros-ROS_VERSION-openni2-camera
-```
-
-```
-sudo apt install ros-ROS_VERSION-realsense2-description
-```
-
-### **Support to simulate Grasping**
-
-Unfortunately grasping in Gazebo is still an open issue, I impelented grasping using this [plugin]( https://github.com/JenniferBuehler/gazebo-pkgs/wiki/Installation) that creates a fixed link between the gripper and the object to be grasped. To activate the grasping plugin set gripper_sim parameter to True in your configuration file. The following dependencies are required:
-
-```
-sudo apt-get install ros-ROS_VERSION-eigen-conversions 
-```
-
-```
-sudo apt-get install ros-ROS_VERSION-object-recognition-msgs
-```
-
-```
-sudo apt install ros-ROS_VERSION-roslint
-```
-
-You can check which parameters have to be tuned looking to the following [wiki]( https://github-wiki-see.page/m/JenniferBuehler/gazebo-pkgs/wiki/The-Gazebo-grasp-fix-plugin) 
-
 
 
 # Configure environment variables 
@@ -196,15 +157,12 @@ copy the following lines (at the end of the .bashrc), remember to replace the st
 source /opt/ros/ROS_VERSION/setup.bash
 source $HOME/ros_ws/install/setup.bash
 export PATH=/opt/openrobots/bin:$PATH
-export LOCOSIM_DIR=$HOME/ros_ws/src/locosim
+export LOCOSIM_DIR=$HOME/ros_ws/src/wheresim
 export PYTHONPATH=/opt/openrobots/lib/pythonPYTHON_VERSION/site-packages:$LOCOSIM_DIR/robot_control:$PYTHONPATH
 export ROS_PACKAGE_PATH=$ROS_PACKAGE_PATH:/opt/openrobots/share/
 ```
 
 the .bashrc is a file that is **automatically** sourced whenever you open a new terminal.
-
-**NOTE**: people with some operating systems like ARCH LINUX, might need to add "export ROS_IP=127.0.0.1" to the .bashrc.
-
 
 
 
@@ -223,7 +181,7 @@ cd ~/ros_ws/src
 Now you can clone the repository inside the ROS workspace you just created:
 
 ```
-git clone https://github.com/mfocchi/locosim.git --recursive
+git clone https://github.com/idra-lab/wheresim.git --recursive
 ```
 
 this command should also clone all the submodules, if you want to update them separately just run
@@ -266,7 +224,7 @@ The first time you compile the code the install folder is not existing, therefor
 source $HOME/ros_ws/install/setup.bash
 ```
 
-Now you are ready to run the code as explained  [here](https://github.com/idra-lab/locosim?tab=readme-ov-file#running-the-software-from-python-ide-pycharm).
+Now you are ready to run the code as explained  [here](https://github.com/idra-lab/wheresim?tab=readme-ov-file#running-the-software-from-python-ide-pycharm).
 
 
 
@@ -311,14 +269,6 @@ After this, if you don't have an SSH key for your Github account, you need to cr
 additional_args = 'gui:=false'
 p.startSimulator(..., additional_args =additional_args)
 ```
-
-2) Another annoying point is the default timeout to kill Gazebo that is by default very long. You can change it (e.g. to 0.1s) by setting the  _TIMEOUT_SIGINT = 0.1 and _TIMEOUT_SIGTERM = 0.1:
-
-```
-sudo gedit /opt/ros/ROS_VERSION/lib/PYTHON_PREFIX/dist-packages/roslaunch/nodeprocess.py
-```
-
- this will cause ROS to send a `kill` signal much sooner.
 
 
 

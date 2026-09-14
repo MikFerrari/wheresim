@@ -35,6 +35,14 @@ elif [[ "$OSTYPE" == "darwin"* ]]; then
     if ! command -v brew &> /dev/null; then
         echo "Homebrew not found. Installing..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        # Make brew available in this script's session: Apple Silicon installs
+        # to /opt/homebrew, Intel to /usr/local, neither of which is guaranteed
+        # to already be on PATH right after a fresh install.
+        if [[ -x /opt/homebrew/bin/brew ]]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+        elif [[ -x /usr/local/bin/brew ]]; then
+            eval "$(/usr/local/bin/brew shellenv)"
+        fi
     else
         echo "Homebrew already installed."
     fi
@@ -105,4 +113,8 @@ fi
 
 
 
-echo -e "${COLOR_BOLD}To start docker, reboot the system!${COLOR_RESET}"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    echo "Setup complete. Open Docker.app from your Applications folder to start Docker (no reboot needed)."
+else
+    echo -e "${COLOR_BOLD}To start docker, reboot the system!${COLOR_RESET}"
+fi
