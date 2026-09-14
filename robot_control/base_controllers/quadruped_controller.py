@@ -294,6 +294,7 @@ class QuadrupedController(BaseController):
         self.W_vel_contacts_des_log = np.full((3 * self.robot.nee, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
 
         self.contact_state_log = np.full((self.robot.nee, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
+        self.stance_legs_log = np.full((self.robot.nee, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
 
         self.baseLinAccW_log = np.full((3, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
         self.baseLinAccB_log = np.full((3, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
@@ -357,6 +358,7 @@ class QuadrupedController(BaseController):
         self.grForcesW_gt_log[:, self.log_counter] = self.grForcesW_gt
         self.grForcesB_log[:, self.log_counter] = self.grForcesB
         self.contact_state_log[:, self.log_counter] = self.contact_state
+        self.stance_legs_log[:, self.log_counter] = self.stance_legs
 
         self.baseLinAccW_log[:, self.log_counter] = self.baseLinAccW
         self.baseLinAccB_log[:, self.log_counter] = self.baseLinAccB
@@ -1346,6 +1348,19 @@ if __name__ == '__main__':
         plt.axis('equal')
         plt.legend()
         plt.grid(True)
+
+        fig = plt.figure()
+        fig.suptitle('Stance legs (planned)', fontsize=20)
+        leg_names = ['LF', 'LH', 'RF', 'RH']
+        for leg in range(4):
+            ax = plt.subplot(4, 1, leg + 1, sharex=fig.axes[0] if leg > 0 else None)
+            plt.plot(p.time_log, p.stance_legs_log[leg, :], color='black', lw=1)
+            plt.ylabel(leg_names[leg])
+            plt.ylim([-0.2, 1.2])
+            plt.yticks([0, 1], ['swing', 'stance'])
+            plt.grid(True)
+        plt.xlabel('Time [s]')
+
         plt.ion()
         plt.show()
 
