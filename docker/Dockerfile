@@ -134,7 +134,6 @@ RUN pip3 install line_profiler
 
 
 #TSID
-
 RUN apt-get update && apt-get install -y  ros-noetic-tsid
 
 RUN apt-get update \
@@ -164,6 +163,9 @@ RUN python3 -m pip install --no-cache-dir \
       ipywidgets \
  && rm -rf /var/lib/apt/lists/*
 
+#joy node
+RUN apt-get update && apt-get install -y \ 
+	ros-noetic-joy
 
 # -----------------------------
 # Patch roslaunch to reduce shutdown timeout
@@ -193,8 +195,9 @@ RUN echo '#!/bin/bash' >> /etc/bash.bashrc && \
     echo 'export DISABLE_ROS1_EOL_WARNINGS=1' >> /etc/bash.bashrc && \
     echo 'export ROS_IP=127.0.0.1' >> /etc/bash.bashrc && \
     echo 'export ROS_HOSTNAME=localhost' >> /etc/bash.bashrc && \
-    echo 'export PYTHONPATH=/opt/openrobots/lib/python3.8/site-packages:$LOCOSIM_DIR/robot_control:$PYTHONPATH' >> /etc/bash.bashrc && \
     echo 'export ROS_PACKAGE_PATH=$LOCOSIM_DIR/robot_descriptions:$LOCOSIM_DIR/robot_hardware_interfaces:$ROS_PACKAGE_PATH:/opt/openrobots/share/' >> /etc/bash.bashrc && \
+    echo 'export GAZEBO_SUPPRESS_EOL_WARNING=1' >> /etc/bash.bashrc && \
+    echo 'export PYTHONPATH=/opt/ros/noetic/lib/python3.8/site-packages:$LOCOSIM_DIR/robot_control:$PYTHONPATH' >> /etc/bash.bashrc && \
     echo 'alias pycharm='\''/root/pycharm/bin/pycharm.sh'\''' >> /etc/bash.bashrc
 RUN chmod +x /etc/bash.bashrc
 

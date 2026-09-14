@@ -20,11 +20,11 @@ class QuadrupedTasks:
         #init for step task
         self.switch_on = False
         self.t0 = None
-        self.q_retraction = robot_conf['q_retraction']
-        self.q_final = robot_conf['q_final']
+        if 'q_retraction' in robot_conf.keys():
+            self.q_retraction = robot_conf['q_retraction']
         self.transition_time = 0.1
 
-        self.pid_tuning_gui = PIDTuningGui(self.quadruped, mode=self.task, tuning_type='PID', init_freq=0.5)
+        self.pid_tuning_gui = PIDTuningGui(self.quadruped, mode=self.task, tuning_type='PID', init_freq=0.5, init_amp=np.array([0., 0., 0.05, 0, 0.1, 0]))
 
 
 
@@ -119,8 +119,8 @@ class QuadrupedTasks:
         freq = self.pid_tuning_gui.debug_freq
         self.phi += 2*np.pi*self.pid_tuning_gui.debug_freq*self.robot_conf['dt']
 
-        amp_lin = np.array([0., 0., 0.05])
-        amp_ang = np.array([0., 0.1, 0])
+        amp_lin = self.pid_tuning_gui.debug_amp[:3]
+        amp_ang = self.pid_tuning_gui.debug_amp[3:]
 
         com = self.initial_com + np.multiply(amp_lin, np.sin(self.phi))
         comd = np.multiply(2*np.pi*freq*amp_lin,  np.cos(self.phi))

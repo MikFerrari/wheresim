@@ -561,7 +561,7 @@ class BaseController(threading.Thread):
         self.basePoseW = np.zeros(6)
         self.baseTwistW = np.zeros(6)
         self.comPoseW = np.zeros(6)
-        self.comTwistsW = np.zeros(6)
+        self.comTwistW = np.zeros(6)
         self.stance_legs = np.array([True, True, True, True])
         self.centroidalInertiaB = np.eye(3)
         self.compositeRobotInertiaB = np.eye(3)

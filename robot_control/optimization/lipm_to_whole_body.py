@@ -161,7 +161,7 @@ if __name__=='__main__':
     N = com_state.shape[1] - 1  # number of time steps for traj-opt
     N_ctrl = int((N * conf.dt_mpc) / dt_ctrl)  # number of time steps for control
     x, dx, ddx = {}, {}, {}
-    for foot_name in conf.foot_names:
+    for foot_name in conf.ee_frames:
         if(foot_name in gait_pattern[0]):
             shift = 0
             initial_phase = "stance"
@@ -199,7 +199,7 @@ if __name__=='__main__':
 
     for i in range(3):
         plt.figure()
-        for foot_name in conf.foot_names:
+        for foot_name in conf.ee_frames:
             plt.plot(time_ctrl, x[foot_name][i, :-1], label="Pos " + foot_name + str(i))
         plt.legend()
 

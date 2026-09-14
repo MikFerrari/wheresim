@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import pinocchio as pin
 from base_controllers.utils.pidManager import PidManager
 from base_controllers.base_controller import BaseController
@@ -13,6 +14,9 @@ from base_controllers.components.rl_velocity_controller.LocomotionPolicyWrapper 
 from termcolor import colored
 import base_controllers.params as conf
 from scipy.io import savemat
+from datetime import datetime, timezone
+import time
+import traceback
 #gazebo messages
 from gazebo_ros import gazebo_interface
 from gazebo_msgs.msg import ContactsState
@@ -25,7 +29,10 @@ from base_controllers.components.imu_utils import IMU_utils
 from base_controllers.components.quadruped_tasks import QuadrupedTasks
 from base_controllers.components.state_machine import StateMachine
 from base_controllers.utils.rosbag_recorder import RosbagControlledRecorder
-
+from optimization.srb_footstep_ocp import  SrbFootstepOcp
+from optimization.lipm_to_whole_body import compute_foot_traj, interpolate_lipm_traj
+from optimization.tsid_quadruped import TsidQuadruped
+import optimization.aliengo_conf as com_optim_conf
 
 class QuadrupedController(BaseController):
     def __init__(self, robot_name="hyq", launch_file=None):
@@ -58,130 +65,36 @@ class QuadrupedController(BaseController):
     def initSubscribers(self):
         self.sub_jstate = ros.Subscriber("/" + self.robot_name + "/joint_states", JointState, callback=self._receive_jstate, queue_size=1, tcp_nodelay=True)
         self.sub_pid_effort = ros.Subscriber("/" + self.robot_name + "/effort_pid", EffortPid, callback=self._receive_pid_effort, queue_size=1, tcp_nodelay=True)
+        self.sub_imu = ros.Subscriber("/" + self.robot_name + "/trunk_imu", Imu,  callback=self._receive_imu, queue_size=1, tcp_nodelay=True)
 
-        if self.real_robot:
-            self.sub_imu_lin_acc = ros.Subscriber("/" + self.robot_name + "/trunk_imu", Vector3,  callback=self._receive_imu_acc_real, queue_size=1, tcp_nodelay=True)
-            if self.state_estimation == 'mocap':  # use pronto for state estimation
-                from geometry_msgs.msg import PoseStamped
-                launchFileNode("mocap_qualisys", "qualisys.launch")
-                self.sub_pose = ros.Subscriber("/qualisys/robot/pose", PoseStamped, callback=self._receive_mocap, queue_size=1, tcp_nodelay=True)
-                self.pub_mocap_twist = ros.Publisher("/qualisys/robot/twist", Twist, queue_size=1, tcp_nodelay=True)
+        if self.state_estimation == 'ekf':  # use pronto for state estimation
+            #  stateest node requires publication of msg type sensor:IMU in topic aliengo/imu we remap
+            startNode(package="topic_tools", executable="relay", args="/" + self.robot_name + "/trunk_imu" + "  " + "/" + self.robot_name + "/imu", name="trunk_imu_to_imu")
+            self.pronto_config = "aliengo_state_estimator_sim.yaml"
+            from pronto_msgs.msg import QuadrupedStance, QuadrupedForceTorqueSensors
+            self.pronto_contacts_sub = ros.Subscriber("/state_estimator_pronto/stance", QuadrupedStance, callback=self._receive_pronto_contacts, queue_size=1, tcp_nodelay=True)
+            self.sub_pose = ros.Subscriber("/state_estimator_pronto/odom", Odometry, callback=self._receive_pose, queue_size=1, tcp_nodelay=True)
+            #these on real robot are published by hw interface
+            self.pub_feet_forces = ros.Publisher("/" + self.robot_name + "/feet_forces", QuadrupedForceTorqueSensors, queue_size=1, tcp_nodelay=True)
 
-            elif self.state_estimation == 'ekf':#use pronto for state estimation
-                #start stateest node
-                # self.u.putIntoGlobalParamServer("use_sim_time", str("false"))
-                # load_rosparams_from_package('pronto_aliengo', 'config/aliengo_state_estimator.yaml', target_namespace='/')
-                # startNode(package="pronto_aliengo", executable="pronto_aliengo_node", args='', name="pronto_aliengo")
-                # startNode(package="pronto_aliengo", executable="aliengo_joint_swapper", args='',name="aliengo_joint_swapper")
-                from pronto_msgs.msg import QuadrupedStance
-                self.pronto_contacts_sub = ros.Subscriber("/state_estimator_pronto/stance", QuadrupedStance, callback=self._receive_pronto_contacts, queue_size=1, tcp_nodelay=True)
-                #we start the pronto node only after startup!
-                self.pronto_config = "aliengo_state_estimator.yaml"
-                self.sub_pose = ros.Subscriber("/state_estimator_pronto/odom", Odometry,  callback=self._receive_pose, queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='odometry':#use odometry
-                self.sub_imu_euler = ros.Subscriber("/" + self.robot_name + "/euler_imu", Vector3,  callback=self._receive_euler, queue_size=1, tcp_nodelay=True)
-                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry,   callback=self._receive_pose_real, queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='imu':#use angular velocity and quaternion coming from IMU (robot_name/imu topic) and write BasePose BaseTwist variables
-                self.sub_imu = ros.Subscriber("/" + self.robot_name + "/imu", Imu,  callback=self._receive_imu, queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='ground_truth':
-                print(f"state_estimation ground truth  not possible on real robot!")
-            else:
-                print(f"state_estimation type not known {self.state_estimation}")
-        else:#simulation
-            self.sub_imu_lin_acc = ros.Subscriber("/" + self.robot_name + "/trunk_imu", Imu,  callback=self._receive_imu_acc, queue_size=1, tcp_nodelay=True)
+        elif self.state_estimation=='ground_truth':
+            self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry,  callback=self._receive_pose,  queue_size=1, tcp_nodelay=True)
+        else:
+            print(f"state_estimation type not known {self.state_estimation}")
 
-            if self.state_estimation == 'ekf':  # use pronto for state estimation
-                #  stateest node requires publication of msg type sensor:IMU in topic aliengo/imu we remap
-                startNode(package="topic_tools", executable="relay", args="/" + self.robot_name + "/trunk_imu" + "  " + "/" + self.robot_name + "/imu", name="trunk_imu_to_imu")
-                self.pronto_config = "aliengo_state_estimator_sim.yaml"
-                from pronto_msgs.msg import QuadrupedStance, QuadrupedForceTorqueSensors
-                self.pronto_contacts_sub = ros.Subscriber("/state_estimator_pronto/stance", QuadrupedStance, callback=self._receive_pronto_contacts, queue_size=1, tcp_nodelay=True)
-                self.sub_pose = ros.Subscriber("/state_estimator_pronto/odom", Odometry, callback=self._receive_pose, queue_size=1, tcp_nodelay=True)
-                #these on real robot are published by hw interface
-                self.pub_feet_forces = ros.Publisher("/" + self.robot_name + "/feet_forces", QuadrupedForceTorqueSensors, queue_size=1, tcp_nodelay=True)
-
-            elif self.state_estimation=='ground_truth':
-                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry,  callback=self._receive_pose,  queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='odometry':
-                self.sub_pose = ros.Subscriber("/" + self.robot_name + "/ground_truth", Odometry, callback=self._receive_pose_real, queue_size=1, tcp_nodelay=True)
-            elif self.state_estimation=='imu':
-                self.sub_imu = ros.Subscriber("/" + self.robot_name + "/trunk_imu", Imu,  callback=self._receive_imu, queue_size=1, tcp_nodelay=True)
-            else:
-                print(f"state_estimation type not known {self.state_estimation}")
-
-            if self.use_ground_truth_contacts:
-                self.sub_contact_lf = ros.Subscriber("/" + self.robot_name + "/lf_foot_bumper", ContactsState,
-                                                     callback=self._receive_contact_lf, queue_size=1, buff_size=2 ** 24,
-                                                     tcp_nodelay=True)
-                self.sub_contact_rf = ros.Subscriber("/" + self.robot_name + "/rf_foot_bumper", ContactsState,
-                                                     callback=self._receive_contact_rf, queue_size=1, buff_size=2 ** 24,
-                                                     tcp_nodelay=True)
-                self.sub_contact_lh = ros.Subscriber("/" + self.robot_name + "/lh_foot_bumper", ContactsState,
-                                                     callback=self._receive_contact_lh, queue_size=1, buff_size=2 ** 24,
-                                                     tcp_nodelay=True)
-                self.sub_contact_rh = ros.Subscriber("/" + self.robot_name + "/rh_foot_bumper", ContactsState,
-                                                     callback=self._receive_contact_rh, queue_size=1, buff_size=2 ** 24,
-                                                     tcp_nodelay=True)
-
-
-    def _receive_imu_acc_real(self, msg):
-        self.baseLinAccB[0] = msg.x
-        self.baseLinAccB[1] = msg.y
-        self.baseLinAccB[2] = msg.z
-        # baseLinAccW is without gravity
-        self.baseLinAccW = self.b_R_w.T @ (self.baseLinAccB - self.imu_utils.IMU_accelerometer_bias) - self.imu_utils.g0
-
-
-    def _receive_imu_acc(self, msg):
-        self.baseLinAccB[0] = msg.linear_acceleration.x
-        self.baseLinAccB[1] = msg.linear_acceleration.y
-        self.baseLinAccB[2] = msg.linear_acceleration.z
-        # baseLinAccW is without gravity
-        self.baseLinAccW = self.b_R_w.T @ (self.baseLinAccB - self.imu_utils.IMU_accelerometer_bias) - self.imu_utils.g0
-
-    def _receive_euler(self, msg):
-        self.euler[0] = msg.x
-        self.euler[1] = msg.y
-        self.euler[2] = msg.z
-
-    def _receive_pronto_contacts(self, msg):
-        self.pronto_contacts[0] = msg.lf
-        self.pronto_contacts[1] = msg.rf
-        self.pronto_contacts[2] = msg.lh
-        self.pronto_contacts[3] = msg.rh
-
-    def _receive_mocap(self, msg):
-        self.quaternion[0] = msg.pose.orientation.x
-        self.quaternion[1] = msg.pose.orientation.y
-        self.quaternion[2] = msg.pose.orientation.z
-        self.quaternion[3] = msg.pose.orientation.w
-        self.basePoseW[self.u.sp_crd["LX"]] = msg.pose.position.x
-        self.basePoseW[self.u.sp_crd["LY"]] = msg.pose.position.y
-        self.basePoseW[self.u.sp_crd["LZ"]] = msg.pose.position.z
-        self.euler = np.array(euler_from_quaternion(self.quaternion))
-        self.basePoseW[self.u.sp_crd["AX"]] = self.euler[0]
-        self.basePoseW[self.u.sp_crd["AY"]] = self.euler[1]
-        self.basePoseW[self.u.sp_crd["AZ"]] = self.euler[2]
-        # filter
-        self.basePoseW_f = self.beta * self.basePoseW + (1. - self.beta) * self.basePoseW_f
-
-        Jomega = self.math_utils.Tomega(self.u.angPart(self.basePoseW))
-        vel = self.u.linPart(self.basePoseW_f-self.basePoseW_f_old) / self.dt
-        omega = Jomega @ self.u.angPart(self.basePoseW_f-self.basePoseW_f_old) / self.dt
-        self.baseTwistW[:3] = vel
-        self.baseTwistW[3:]  = omega
-        self.basePoseW_f_old = self.basePoseW_f.copy()
-        msg=Twist()
-        msg.linear.x = self.baseTwistW[0]
-        msg.linear.y = self.baseTwistW[1]
-        msg.linear.z = self.baseTwistW[2]
-        msg.angular.x = self.baseTwistW[3]
-        msg.angular.y = self.baseTwistW[4]
-        msg.angular.z = self.baseTwistW[5]
-        self.pub_mocap_twist.publish(msg)
-        # compute orientation matrix
-        self.b_R_w = self.math_utils.rpyToRot(self.euler)
-
+        if self.use_ground_truth_contacts:
+            self.sub_contact_lf = ros.Subscriber("/" + self.robot_name + "/lf_foot_bumper", ContactsState,
+                                                 callback=self._receive_contact_lf, queue_size=1, buff_size=2 ** 24,
+                                                 tcp_nodelay=True)
+            self.sub_contact_rf = ros.Subscriber("/" + self.robot_name + "/rf_foot_bumper", ContactsState,
+                                                 callback=self._receive_contact_rf, queue_size=1, buff_size=2 ** 24,
+                                                 tcp_nodelay=True)
+            self.sub_contact_lh = ros.Subscriber("/" + self.robot_name + "/lh_foot_bumper", ContactsState,
+                                                 callback=self._receive_contact_lh, queue_size=1, buff_size=2 ** 24,
+                                                 tcp_nodelay=True)
+            self.sub_contact_rh = ros.Subscriber("/" + self.robot_name + "/rh_foot_bumper", ContactsState,
+                                                 callback=self._receive_contact_rh, queue_size=1, buff_size=2 ** 24,
+                                                 tcp_nodelay=True)
 
     def _receive_imu(self, msg):
         self.quaternion[0] = msg.orientation.x
@@ -190,45 +103,36 @@ class QuadrupedController(BaseController):
         self.quaternion[3] = msg.orientation.w
 
         self.euler = np.array(euler_from_quaternion(self.quaternion))
+        #euler angles
         self.basePoseW[self.u.sp_crd["AX"]] = self.euler[0]
         self.basePoseW[self.u.sp_crd["AY"]] = self.euler[1]
         self.basePoseW[self.u.sp_crd["AZ"]] = self.euler[2]
+
         # compute orientation matrix
         self.b_R_w = self.math_utils.rpyToRot(self.euler)
         self.angVelB[0] = msg.angular_velocity.x
         self.angVelB[1] = msg.angular_velocity.y
         self.angVelB[2] = msg.angular_velocity.z
+        # angular part of twist
         self.baseTwistW[3:] = self.b_R_w.T.dot(self.angVelB)
 
-    def _receive_pose_real(self, msg):
-        self.quaternion[0] = msg.pose.pose.orientation.x
-        self.quaternion[1] = msg.pose.pose.orientation.y
-        self.quaternion[2] = msg.pose.pose.orientation.z
-        self.quaternion[3] = msg.pose.pose.orientation.w
+        # linear acceleration
+        self.baseLinAccB[0] = msg.linear_acceleration.x
+        self.baseLinAccB[1] = msg.linear_acceleration.y
+        self.baseLinAccB[2] = msg.linear_acceleration.z
 
-        self.basePoseW[self.u.sp_crd["LX"]] = self.basePoseW_legOdom[0]
-        self.basePoseW[self.u.sp_crd["LY"]] = self.basePoseW_legOdom[1]
-        self.basePoseW[self.u.sp_crd["LZ"]] = self.basePoseW_legOdom[2]
+        # baseLinAccW is without gravity
+        self.baseLinAccW = self.b_R_w.T @ (self.baseLinAccB - self.imu_utils.IMU_accelerometer_bias) - self.imu_utils.g0
 
-        self.basePoseW[self.u.sp_crd["AX"]] = self.euler[0]
-        self.basePoseW[self.u.sp_crd["AY"]] = self.euler[1]
-        self.basePoseW[self.u.sp_crd["AZ"]] = self.euler[2]
+        # get estimates of base position and linear twist by odometry
+        if self.state_estimation == 'odometry':
+            self.basePoseW[self.u.sp_crd["LX"]] = self.basePoseW_legOdom[0]
+            self.basePoseW[self.u.sp_crd["LY"]] = self.basePoseW_legOdom[1]
+            self.basePoseW[self.u.sp_crd["LZ"]] = self.basePoseW_legOdom[2]
 
-        if False:#any(self.contact_state):
             self.baseTwistW[self.u.sp_crd["LX"]] = self.baseTwistW_legOdom[0]
             self.baseTwistW[self.u.sp_crd["LY"]] = self.baseTwistW_legOdom[1]
             self.baseTwistW[self.u.sp_crd["LZ"]] = self.baseTwistW_legOdom[2]
-        else:
-            self.baseTwistW[self.u.sp_crd["LX"]] = self.imu_utils.baseLinTwistImuW[0]
-            self.baseTwistW[self.u.sp_crd["LY"]] = self.imu_utils.baseLinTwistImuW[1]
-            self.baseTwistW[self.u.sp_crd["LZ"]] = self.imu_utils.baseLinTwistImuW[2]
-
-        self.baseTwistW[self.u.sp_crd["AX"]] = msg.twist.twist.angular.x
-        self.baseTwistW[self.u.sp_crd["AY"]] = msg.twist.twist.angular.y
-        self.baseTwistW[self.u.sp_crd["AZ"]] = msg.twist.twist.angular.z
-
-        # compute orientation matrix
-        self.b_R_w = self.math_utils.rpyToRot(self.euler)
 
     def initVars(self):
         super().initVars()
@@ -270,10 +174,11 @@ class QuadrupedController(BaseController):
 
         self.basePoseW_des = np.zeros(6) * np.nan
         self.baseTwistW_des = np.zeros(6) * np.nan
-
+        self.baseAccW_des = np.zeros(6) * np.nan
 
         self.comPoseW_des = np.zeros(6) * np.nan
         self.comTwistW_des = np.zeros(6) * np.nan
+        self.comAccW_des = np.zeros(6) * np.nan
 
         self.comPosB = np.zeros(3) * np.nan
         self.comVelB = np.zeros(3) * np.nan
@@ -355,6 +260,11 @@ class QuadrupedController(BaseController):
         self.comPoseW_des_log = np.full((6, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
         self.comTwistW_des_log = np.full((6, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
 
+        self.cop_des = np.full(2, np.nan)
+        self.cop_act = np.full(2, np.nan)
+        self.cop_des_log = np.full((2, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
+        self.cop_log = np.full((2, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
+
         self.comVelW_leg_odom = np.full((3), np.nan)
         self.comVelW_leg_odom_log = np.full((3, conf.robot_params[self.robot_name]['buffer_size']),  np.nan)
 
@@ -411,7 +321,9 @@ class QuadrupedController(BaseController):
         self.collapseTime = 0.7
 
         self.pronto_contacts = np.zeros(4)
-        self.controller_ready = False
+
+        #friction coefficient
+        self.mu = 0.8
 
     def logData(self):
         # full with new values
@@ -421,6 +333,8 @@ class QuadrupedController(BaseController):
         self.comTwistW_log[:, self.log_counter] = self.comTwistW
         self.comPoseW_des_log[:, self.log_counter] = self.comPoseW_des
         self.comTwistW_des_log[:, self.log_counter] = self.comTwistW_des
+        self.cop_des_log[:, self.log_counter] = self.cop_des
+        self.cop_log[:, self.log_counter] = self.cop_act
         self.basePoseW_log[:, self.log_counter] = self.basePoseW
         self.baseTwistW_log[:, self.log_counter] = self.baseTwistW
         self.basePoseW_des_log[:, self.log_counter] = self.basePoseW_des
@@ -527,47 +441,39 @@ class QuadrupedController(BaseController):
         self.rate = ros.Rate(1 / self.dt)
         print(colored("Started QuadrupedController", "blue"))
 
-    def resetRobot(self, basePoseDes=np.array([0, 0, 0.3, 0., 0., 0.])):
-        # this sets the position of the joints
-        gazebo_interface.set_model_configuration_client(self.robot_name, '', self.joint_names, self.qj_0, '/gazebo')
-        self.send_des_jstate(self.q_des, self.qd_des, self.tau_ffwd)
-        # this sets the position of the base
-        if self.DEBUG == 'none' or self.DEBUG == 'pushup':
-            self.freezeBase(False, basePoseW=basePoseDes)
-        else:
-            self.freezeBase(True, basePoseW=basePoseDes)
+    def resetRobot(self, basePoseDes=np.array([0, 0, 0.3, 0., 0., 0.]), baseTwistDes=None,
+                   freeze_base=False, settle_timeout=2.0):
+        """
+        Teleport the robot to basePoseDes with joints at q_0 and leave it ready to be controlled.
+        Simulation-only replacement for startupProcedure(): instead of the gradual gravity-compensated
+        stand-up sequence, it places the robot directly in its nominal configuration. Meant to be used
+        for fast resets (e.g. between RL episodes) rather than for the real robot power-on sequence.
+        """
+        assert not self.real_robot, "resetRobot() teleports the robot through Gazebo services, it is simulation-only"
 
-    def reset(self, basePoseW=None, baseTwistW=None, resetPid=False):
-        self.q_des = conf.robot_params[self.robot_name]['q_0'].copy()
+        if baseTwistDes is None:
+            baseTwistDes = np.zeros(6)
+
+        # target joint state the PD controller should hold once the robot is teleported
+        self.q_des = self.qj_0.copy()
         self.qd_des = np.zeros(self.robot.na)
         self.tau_ffwd = np.zeros(self.robot.na)
-        if resetPid:
-            self.pid.setPDjoints(self.kp_j, self.kd_j, self.ki_j)
-        if basePoseW is None:
-            basePoseW = np.hstack([self.base_offset, np.zeros(3)])
 
+        # make sure the PID exists and is back at nominal gains (e.g. after gracefulCollapse ramped them down)
+        if getattr(self, 'pid', None) is None:
+            self.pid = PidManager(self.joint_names)
+        self.pid.setPDjoints(self.kp_j, self.kd_j, self.ki_j)
 
-        self.freezeBase(flag=True, basePoseW=basePoseW)
-        ros.sleep(0.5)
-
-
+        # freeze gravity before teleporting so the robot cannot start falling before joints/base are in place
+        self.freezeBase(False, basePoseW=basePoseDes, baseTwistW=baseTwistDes)
         gazebo_interface.set_model_configuration_client(self.robot_name, '', self.joint_names, self.qj_0, '/gazebo')
-        while np.linalg.norm(self.qd)>0.05 or np.linalg.norm(self.q-self.q_des)>0.05:
-            self.updateKinematics()
-            self.send_command(self.q_des, self.qd_des, self.tau_ffwd)
-            if np.linalg.norm(self.u.linPart(self.basePoseW-basePoseW))>1:
-                self.freezeBase(flag=True, basePoseW=basePoseW)
-                ros.sleep(0.5)
-
-        if baseTwistW is None:
-            baseTwistW = np.zeros(6)
-
-        self.freezeBase(flag=True, basePoseW=basePoseW, baseTwistW=baseTwistW)
-
-        self.initVars() # reset logged values
-
-        self.imu_utils.baseLinTwistImuW = self.u.linPart(self.baseTwistW).copy()
-
+        self.send_des_jstate(self.q_des, self.qd_des, self.tau_ffwd)
+        # re-anchor the leg odometry to the teleported feet, otherwise it keeps using the pre-reset ones
+        self.leg_odom.reset(np.hstack([self.u.linPart(basePoseDes), self.quaternion, self.q]))
+        self.imu_utils.baseLinTwistImuW = self.u.linPart(baseTwistDes).copy()
+        # release (or keep frozen, for debug/tasks that need it) gravity now that the robot is settled
+        self.freezeBase(False, basePoseW=basePoseDes, baseTwistW=baseTwistDes)
+        self.updateKinematics()
 
     def Hframe2World(self, poseH, dposeH=None, ddposeH=None):
         # returns variables from Hframe to World frame
@@ -649,7 +555,9 @@ class QuadrupedController(BaseController):
         self.basePoseW_des[:3] -= b_R_w_des.T @ self.comPosB
 
         self.baseTwistW_des = self.comTwistW_des.copy()
+        print(self.baseTwistW_des )
         self.baseTwistW_des[:3] -= b_R_w_des.T @ (omega_skew @ self.comPosB + self.comVelB)
+        print(self.basePoseW_des)
 
     def Wbase2Bcontact_des(self):
         b_R_w_des = pin.rpy.rpyToMatrix(self.u.angPart(self.basePoseW_des)).T
@@ -661,6 +569,8 @@ class QuadrupedController(BaseController):
                     omega_skew.T @ (self.W_contacts_des[leg] - self.u.linPart(self.basePoseW_des))
                     - self.u.linPart(self.baseTwistW_des))
             # self.B_vel_contacts_des[leg] = 5 * (self.B_contacts_des[leg]-self.B_contacts[leg])
+
+
 
     def Wbase2Joints_des(self):
         # before the first call, please set
@@ -727,6 +637,19 @@ class QuadrupedController(BaseController):
         q = p0[1] - m * p0[0]
         return m, q
 
+    def computeCoP(self):
+        # actual CoP: weighted average of the stance feet XY positions, weighted by the vertical grf
+        num = np.zeros(2)
+        den = 0.
+        for leg in range(4):
+            if self.contact_state[leg]:
+                fz = self.u.getLegJointState(leg, self.grForcesW)[2]
+                num += fz * self.W_contacts[leg][:2]
+                den += fz
+        if den > self.force_th:
+            return num / den
+        return np.full(2, np.nan)
+
     def send_command(self, q_des=None, qd_des=None, tau_ffwd=None, log_data_in_send_command = False):
         # q_des, qd_des, and tau_ffwd have dimension 12
         # and are ordered as on the robot
@@ -742,17 +665,12 @@ class QuadrupedController(BaseController):
 
         self.send_des_jstate(self.q_des, self.qd_des, self.tau_ffwd)
 
-        # if (self.APPLY_EXTERNAL_WRENCH and self.time > self.TIME_EXTERNAL_WRENCH):
-        #     print("START APPLYING EXTERNAL WRENCH")
-        #     self.applyForce(0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.05)
-        #     self.APPLY_EXTERNAL_WRENCH = False
-
         # log variables
         if log_data_in_send_command:
             self.logData()
         self.rate.sleep()
         self.sync_check()
-        self.time = np.round(self.time + self.dt, 4)#np.array([self.loop_time]), 3)
+        self.time = np.round(self.time + self.dt, 4)
 
 
     def visualizeContacts(self, delete_markers=False):
@@ -760,6 +678,10 @@ class QuadrupedController(BaseController):
 
             leg = self.u.leg_map[legid]
             if self.contact_state[leg]:
+
+                #friciton cones
+                self.ros_pub.add_cone(self.W_contacts[leg], np.array([0, 0, 1.]), self.mu, height=0.15, color="blue")
+
                 self.ros_pub.add_arrow(self.W_contacts[leg],
                                        self.u.getLegJointState(leg, self.grForcesW/ (6*self.robot.robotMass)),
                                        "green")
@@ -781,18 +703,16 @@ class QuadrupedController(BaseController):
                                        "red")
 
 
+            #
+            self.ros_pub.add_marker(self.W_contacts[leg], radius=0.001)
+
+
+
         self.ros_pub.add_polygon([self.B_contacts[0],
                                   self.B_contacts[1],
                                   self.B_contacts[3],
                                   self.B_contacts[2],
                                   self.B_contacts[0] ], "red", visual_frame="base_link")
-
-        self.ros_pub.add_polygon([self.B_contacts_des[0],
-                                  self.B_contacts_des[1],
-                                  self.B_contacts_des[3],
-                                  self.B_contacts_des[2],
-                                  self.B_contacts_des[0]], "green", visual_frame="base_link")
-
 
         self.ros_pub.publishVisual(delete_markers=delete_markers)
 
@@ -806,7 +726,7 @@ class QuadrupedController(BaseController):
                                                                                       B_contacts=self.B_contacts,
                                                                                       b_R_w=self.b_R_w,
                                                                                       wJ=self.wJ,
-                                                                                      ang_vel=self.u.angPart(self.baseTwistW),
+                                                                                      ang_vel=self.b_R_w.T.dot(self.angVelB),
                                                                                       qd=self.qd,
                                                                                       update_legOdom=update_legOdom)
         self.imu_utils.compute_lin_vel(self.baseLinAccW, self.loop_time)
@@ -863,6 +783,8 @@ class QuadrupedController(BaseController):
             print("Go fold Accomplished → next state")
             sm.next(time)
 
+    # helpers for homing procedure
+
     def contactsAchieved(self):
         contacts_achieved = True
         for leg in range(4):
@@ -890,7 +812,6 @@ class QuadrupedController(BaseController):
             else:
                 self.delta_z = 0.1
         #on loop
-        #print(f"Searching contacts leg...{time}")
         h_R_w = self.b_R_w @ pin.rpy.rpyToMatrix(0, 0, self.u.angPart(self.basePoseW)[2])
         for leg in range(4):
             # update feet task to extend feet to acquire contact
@@ -980,7 +901,7 @@ class QuadrupedController(BaseController):
             sm.next(time)
 
     def startupProcedure(self):
-        ros.sleep(.5)
+        #ros.sleep(.5)
         print(colored("Starting up", "blue"))
         if self.robot_name == 'hyq' or self.robot_name == 'solo':
             super(QuadrupedController, self).startupProcedure()
@@ -1056,90 +977,6 @@ class QuadrupedController(BaseController):
             ros.signal_shutdown("killed")
             self.deregister_node()
 
-    def saveData(self, path, filename='DATA.mat', EXTRADATA={},start=0, stop=-1, verbose = conf.verbose):
-        DATA = {}
-        DATA['comPosB_log'] = self.comPosB_log[:, start:stop]
-        DATA['comVelB_log'] = self.comVelB_log[:, start:stop]
-        DATA['comPoseW_log'] = self.comPoseW_log[:, start:stop]
-        DATA['comTwistW_log'] = self.comTwistW_log[:, start:stop]
-        DATA['comPoseW_des_log'] = self.comPoseW_des_log[:, start:stop]
-        DATA['comTwistW_des_log'] = self.comTwistW_des_log[:, start:stop]
-        DATA['basePoseW_log'] = self.basePoseW_log[:, start:stop]
-        DATA['baseTwistW_log'] = self.baseTwistW_log[:, start:stop]
-        DATA['basePoseW_des_log'] = self.basePoseW_des_log[:, start:stop]
-        DATA['baseTwistW_des_log'] = self.baseTwistW_des_log[:, start:stop]
-
-        DATA['basePoseW_legOdom_log'] = self.basePoseW_legOdom_log[:, start:stop]
-        DATA['baseTwistW_legOdom_log'] = self.baseTwistW_legOdom_log[:, start:stop]
-        DATA['q_des_log'] = self.q_des_log[:, start:stop]
-        DATA['q_log'] = self.q_log[:, start:stop]
-        DATA['qd_des_log'] = self.qd_des_log[:, start:stop]
-        DATA['qd_log'] = self.qd_log[:, start:stop]
-        DATA['tau_fb_log'] = self.tau_fb_log[:, start:stop]
-        DATA['tau_ffwd_log'] = self.tau_ffwd_log[:, start:stop]
-        DATA['tau_des_log'] = self.tau_des_log[:, start:stop]
-        DATA['tau_log'] = self.tau_log[:, start:stop]
-
-        DATA['grForcesW_log'] = self.grForcesW_log[:, start:stop]
-        DATA['grForcesW_des_log'] = self.grForcesW_des_log[:, start:stop]
-        DATA['grForcesW_wbc_log'] = self.grForcesW_wbc_log[:, start:stop]
-        DATA['grForcesW_gt_log'] = self.grForcesW_gt_log[:, start:stop]
-        DATA['grForcesB_log'] = self.grForcesB_log[:, start:stop]
-        DATA['contact_state_log'] = self.contact_state_log[:, start:stop]
-
-        DATA['baseLinAccW_log'] = self.baseLinAccW_log[:, start:stop]
-        DATA['baseLinAccB_log'] = self.baseLinAccB_log[:, start:stop]
-
-        DATA['comVelW_leg_odom_log'] = self.comVelW_leg_odom_log[:, start:stop]
-
-
-        DATA['B_contacts_log'] = self.B_contacts_log[:, start:stop]
-        DATA['B_contacts_des_log'] = self.B_contacts_des_log[:, start:stop]
-
-        DATA['W_contacts_log'] = self.W_contacts_log[:, start:stop]
-        DATA['W_contacts_des_log'] = self.W_contacts_des_log[:, start:stop]
-
-        DATA['B_vel_contacts_des_log'] = self.B_vel_contacts_des_log[:, start:stop]
-        DATA['W_vel_contacts_des_log'] = self.W_vel_contacts_des_log[:, start:stop]
-
-        DATA['baseLinTwistImuW_log'] = self.baseLinTwistImuW_log[:, start:stop]
-
-
-        DATA['wrench_fbW_log'] = self.wrench_fbW_log[:, start:stop]
-        DATA['wrench_ffW_log'] = self.wrench_ffW_log[:, start:stop]
-        DATA['wrench_gW_log'] = self.wrench_gW_log[:, start:stop]
-        DATA['wrench_desW_log'] = self.wrench_desW_log[:, start:stop]
-
-
-        DATA['kp_j'] = self.kp_j
-        DATA['kd_j'] = self.kd_j
-        DATA['ki_j'] = self.ki_j
-        DATA['kp_lin'] = self.kp_lin
-        DATA['kd_lin'] = self.kd_lin
-        DATA['kp_ang'] = self.kp_ang
-        DATA['kd_ang'] = self.kd_ang
-        DATA['kp_wbc_j'] = self.kp_wbc_j
-        DATA['kd_wbc_j'] = self.kd_wbc_j
-        DATA['ki_wbc_j'] = self.ki_wbc_j
-
-        DATA['time_log'] = self.time_log[start:stop]
-        DATA['loop_time_log'] = self.loop_time_log[start:stop]
-        DATA['log_counter'] = self.log_counter
-
-        for key in EXTRADATA.keys():
-            if key in DATA.keys():
-                print("Key '" + key + "' found in EXTRADATA. Ignored", flush=True)
-            else:
-                DATA[key] = EXTRADATA[key]
-
-        if filename[-4:] != ".mat":
-            filename+=".mat"
-
-        savemat(path+"/"+filename, DATA, do_compression=True)
-
-        if verbose:
-            print('Log data saved in '+ path+"/"+filename, flush=True)
-
 
     def gracefulCollapse(self):
         self.alphaCollapse -= self.dt / self.collapseTime
@@ -1155,88 +992,108 @@ class QuadrupedController(BaseController):
             self.pid.setPDjoints(self.alphaCollapse * self.kp_act, self.alphaCollapse * self.kd_act, self.alphaCollapse * self.ki_act)
             return False
 
+    def getCoMReference(self, com_conf, robot_height, com_initial_pos_xy, com_initial_vel_xy):
+        # p_init = [px0, py0, px1, py1] = initial position of the two feet on the ground
+        # hip_pos: dictionary (keyed by ee_frame name, e.g. "lf_foot") containing XY pos of the hips w.r.t. the CoM
+        # gait_pattern: list containing names of support feet for every time step
 
-    def get_current_frame_file(self):
-        allfiles = [f for f in os.listdir('/tmp/camera_save') if os.path.isfile(os.path.join('/tmp/camera_save', f))]
-        if len(allfiles) != 0:
-            return max(allfiles)
-        else:
-            None
+        hip_joint_ids, hip_pos = {}, {}
+        for foot_frame in com_conf.ee_frames:
+            haa_joint_name = foot_frame.replace('_foot', '_haa_joint')
+            hip_joint_ids[foot_frame] = self.robot.model.getJointId(haa_joint_name)
+            hip_pos[foot_frame] = self.robot.placement(self.neutral_fb_jointstate, hip_joint_ids[foot_frame]).translation[:2]
 
-    def saveVideo(self, path, start_file=None, filename='record', format='mkv',  fps=60, speedUpDown=1, remove_jpg=False):
-        # only if camera_xxx.world has been used
-        # for details on commands, check https://ffmpeg.org/ffmpeg.html
-        if 'camera' not in self.world_name_str:
-            print('Cannot create a video of a not camera world (world_name:'+self.world_name_str+')', flush=True)
-            return
-        #
-        # # kill gazebo
-        # os.system("killall rosmaster rviz gzserver gzclient")
-        try:
-            if start_file != None:
-                # delete all the files before start_file
-                allfiles = [f for f in os.listdir('/tmp/camera_save') if os.path.isfile(os.path.join('/tmp/camera_save', f))]
-                for f in allfiles:
-                    if f < start_file:
-                        #parentheses are not supported by bash
-                        f = f.replace('(', '\(')
-                        f = f.replace(')', '\)')
-                        cmd = 'rm /tmp/camera_save/' + f
-                        os.system(cmd)
+        # MPC Parameters:
+        nb_dt_per_step = int(round(com_conf.T_step / com_conf.dt_mpc))
+        N = com_conf.nb_steps * nb_dt_per_step  # number of desired walking intervals
 
-            if '.' in filename:
-                filename=filename[:, filename.find('.')]
-            if path[-1] != '/':
-                path+='/'
-            videoname = path + filename + '.' + format
-            save_video_cmd = "ffmpeg -hide_banner -loglevel error -r "+str(fps)+" -pattern_type glob -i '/tmp/camera_save/default_camera_link_my_camera*.jpg' -c:v libx264 "+videoname
-            ret = os.system(save_video_cmd)
-            saved = ''
-            if ret == 0:
-                saved = ' saved'
+        # CoM initial state:
+        x_0 = np.array([com_initial_pos_xy[0], com_initial_pos_xy[1], com_initial_vel_xy[0], com_initial_vel_xy[1]])
+
+        #initial position of the feet (decide with which feet to start)
+        p_0 = np.concatenate([x_0[:2] + hip_pos["lf_foot"], x_0[:2] + hip_pos["rh_foot"]])
+
+        # compute Com reference trajectories:
+        C_ref = np.zeros((2, N + 1))  # not used
+        DC_ref = np.tile(com_conf.step_length / com_conf.T_step, N + 1)
+        DC_ref = np.vstack([DC_ref, np.zeros(N + 1)])
+        gait_pattern = []
+        while (len(gait_pattern) < N + 1):
+            gait_pattern += nb_dt_per_step * [["lf_foot", "rh_foot"]]
+            gait_pattern += nb_dt_per_step * [["rf_foot", "lh_foot"]]
+
+        ocp = SrbFootstepOcp(com_conf.dt_mpc, N, robot_height)
+
+
+        start = time.time()
+        sol = ocp.solve(x_0, p_0, com_conf.wc, com_conf.wdc, com_conf.wu, com_conf.wp, C_ref, DC_ref, hip_pos, gait_pattern)
+        print("Computation time", time.time() - start)
+
+        com_state, u, p = sol.value(ocp.x), sol.value(ocp.u), sol.value(ocp.p)
+        foot_steps, cop, hip_pos_0, hip_pos_1 = np.zeros((4, N)), np.zeros((2, N)), np.zeros((2, N)), np.zeros((2, N))
+        j = 0
+        for i in range(N):
+            if (i > 0 and gait_pattern[i][0] != gait_pattern[i - 1][0]):
+                j += 1
+            foot_steps[:, i] = sol.value(ocp.p[:, j])
+            cop[:, i] = foot_steps[:2, i] + u[i] * (foot_steps[2:, i] - foot_steps[:2, i])
+            hip_pos_0[:, i] = com_state[:2, i] + hip_pos[gait_pattern[i][0]]
+            hip_pos_1[:, i] = com_state[:2, i] + hip_pos[gait_pattern[i][1]]
+
+        return com_state, foot_steps, cop,  gait_pattern
+
+    def generateInterpolatedReference(self, com_conf, com_state, foot_steps, cop, gait_pattern, robot_height):
+        # INTERPOLATE WITH TIME STEP OF CONTROLLER
+        dt_ctrl = com_conf.dt  # time step used by controller
+        com_state_x = com_state[[0, 2], :]
+        com_state_y = com_state[[1, 3], :]
+        cop_x = cop[0, :]
+        cop_y = cop[1, :]
+        com, dcom, ddcom, cop, foot_steps_ctrl = interpolate_lipm_traj(
+            com_conf.T_step, com_conf.nb_steps, com_conf.dt_mpc, dt_ctrl,
+            robot_height, com_conf.g,
+            com_state_x, com_state_y, foot_steps, cop_x, cop_y)
+
+        # COMPUTE TRAJECTORIES FOR FEET
+        N = com_state.shape[1] - 1  # number of time steps for traj-opt
+        N_ctrl = int((N * com_conf.dt_mpc) / dt_ctrl)  # number of time steps for control
+        x, dx, ddx = {}, {}, {}
+        for foot_name in com_conf.ee_frames:
+            if (foot_name in gait_pattern[0]):
+                shift = 0
+                initial_phase = "stance"
+                gp = gait_pattern[0]
             else:
-                saved = ' did not saved'
-            #print('Video '+videoname+saved, flush=True)
-
-
-            if speedUpDown <= 0:
-                print('speedUpDown must be greather than 0.0', flush=True)
+                shift = 1
+                initial_phase = "swing"
+                i = 1
+                while (gait_pattern[i][0] == gait_pattern[i - 1][0]):
+                    i += 1
+                gp = gait_pattern[i]
+            if (foot_name == gp[0]):
+                indices = [0, 1]
             else:
-                if speedUpDown != 1:
-                    pts_multiplier = int(1 / speedUpDown)
-                    videoname_speedUpDown = path + filename + str(speedUpDown).replace('.', '')+'x.'+format
-                    speedUpDown_cmd = "ffmpeg -hide_banner -loglevel error -i "+videoname+" -filter:v 'setpts="+str(pts_multiplier)+"*PTS' "+videoname_speedUpDown
-                    ret = os.system(speedUpDown_cmd)
-                    saved = ''
-                    if ret == 0:
-                        saved= ' saved'
-                    else:
-                        saved = ' did not saved'
-                    #print('Video ' + videoname_speedUpDown+saved, flush=True)
+                indices = [2, 3]
 
-            if remove_jpg:
-                remove_jpg_cmd = 'for f in /tmp/camera_save/*; do rm "$f"; done'
-                os.system(remove_jpg_cmd)
-                #print('Jpg files removed', flush=True)
-        except:
-            pass
+            nb_dt_per_step = int(round(com_conf.T_step / com_conf.dt_mpc))
+            target_foot_steps = foot_steps[indices, shift::2*nb_dt_per_step]
+            x[foot_name], dx[foot_name], ddx[foot_name] = compute_foot_traj(target_foot_steps, N_ctrl, dt_ctrl, com_conf.T_step, com_conf.step_height, initial_phase)
 
-
+        return com,  dcom, ddcom, x, dx, ddx, cop
 
 if __name__ == '__main__':
     p = QuadrupedController('aliengo')
     world_name = 'fast.world'
     use_gui = False
-    p.state_estimation = 'odometry' # 'odometry','imu', 'pronto', 'ground_truth' (only sim), 'mocap'
+    p.state_estimation = 'ground_truth' # 'odometry',  'pronto', 'ground_truth' (only sim), 'mocap'
     rl_control = 'none' #'none', 'sensor_based' (Giulio), 'state_est_based' (Riccardo)
     # NOTE: in the RL controller, SE NN is used only if state estimation is not pronto
     rl_use_nn_se = p.state_estimation != 'pronto'
-    use_joy = False
+    use_joy = True
     generate_reference = False
     p.SAVE_BAG = False  #
     if p.robot_name == 'go2':
         p.custom_locosim_launch_file = True
-
 
     if rl_control == 'state_est_based':
         if p.real_robot and (p.state_estimation != 'pronto' and p.state_estimation != 'pronto'):
@@ -1247,7 +1104,7 @@ if __name__ == '__main__':
         rl_controller = LocomotionPolicyWrapper(use_state_est=True, dt = p.dt)
 
     try:
-        #p.startController(world_name='slow.world')
+
         p.startController(world_name=world_name,
                           use_ground_truth_contacts=True,
                           additional_args=['gui:='+str(use_gui),
@@ -1255,20 +1112,20 @@ if __name__ == '__main__':
                                            'rviz:=true',
                                            *(['task_period:=0.002'] if p.real_robot else [])]) #change task period to 500Hz instead of 1000Hz for real robot
         if p.SAVE_BAG:
-            from datetime import datetime, timezone
-
             now = datetime.now()
             format_date = now.strftime("%Y-%m-%d-%H-%M-%S")
             p.recorder = RosbagControlledRecorder(
-                topics='/aliengo/joint_states /aliengo/imu /aliengo/feet_forces /state_estimator_pronto/pose '
-                       '/state_estimator_pronto/twist /state_estimator_pronto/vel_raw  '
-                       '/state_estimator_pronto/stance /value_function /qualisys/robot/pose /rl_ref_vel /tf /tf_static',
-                        bag_name="saferl_" + format_date + ".bag", record_from_startup_=False)
-
+                topics='/aliengo/joint_states /aliengo/trunk_imu /aliengo/ground_truth /rl_ref_vel /tf /tf_static',
+                        bag_name="test_" + format_date + ".bag", record_from_startup_=False)
             p.recorder.start_recording_srv()
         if use_joy:
-            joy = JoyManager()
-        p.startupProcedure()
+            joy = JoyManager("js1", end_scale = 0.2)
+
+        p.resetRobot(basePoseDes=np.array([0.0, -0.0,  0.356, -0.0, -0.0, 0.0]))
+        #p.startupProcedure()
+        # to reduce simulation frequency
+        p.setSimSpeed(dt_sim=0.001, max_update_rate=100, iters=1500)
+
         if p.state_estimation=='pronto':
             launchFileNode("mocap_qualisys", "qualisys.launch")
             launchFileNode("pronto_aliengo", "pronto_aliengo.launch", additional_args=['pronto_conf:='+p.pronto_config,
@@ -1282,19 +1139,69 @@ if __name__ == '__main__':
             p.ref_gen = QuadrupedTasks(task='pushup', robot_conf=conf.robot_params[p.robot_name], gui=True, quadruped=p)
             p.ref_gen.startUp(p.time)
 
-        #to reduce simulation frequency
-        #p.setSimSpeed(dt_sim=0.001, max_update_rate=300, iters=1500)
+        #compute robot reference
+        com_state, foot_steps, cop,  gait_pattern = p.getCoMReference(com_optim_conf, p.robot_height, p.comPoseW[:2], p.comTwistW[:2])
+        com_ref,  dcom_ref, ddcom_ref, x_ref, dx_ref, ddx_ref, cop_ref = p.generateInterpolatedReference(com_optim_conf, com_state, foot_steps, cop,   gait_pattern, p.robot_height)
+
+        if conf.plotting:
+            N = foot_steps.shape[1]
+            plt.figure()
+            plt.plot(com_state[0, :N], color='green', label="CoM X pos")
+
+            plt.plot(cop[0, :], color='blue',label="CoP X")
+            plt.plot(foot_steps[0, :], ':', color='black', label="foot steps 0 X")
+            plt.plot(foot_steps[2, :], ':', color='black', label="foot steps 1 X")
+            plt.grid(True)
+            plt.legend()
+
+            # plt.figure()
+            # plt.plot(com_state[2, :N], color='green', label="CoM X vel")
+            # plt.grid(True)
+            # plt.legend()
+            plt.figure()
+            plt.plot(com_state[1, :N], color='green', label="CoM Y pos")
+            plt.plot(cop[1, :], color='blue', label="CoP Y")
+            plt.plot(foot_steps[1, :], ':',color='black',label="foot steps 0 Y")
+            plt.plot(foot_steps[3, :], ':', color='black', label="foot steps 1 Y")
+            plt.legend()
+            plt.grid(True)
+            #
+            # plt.figure()
+            # plt.plot(com_state[2, :N], color='green', label="CoM Y vel")
+            # plt.grid(True)
+            # plt.legend()
+            # plt.show( )
+
+            plt.figure()
+            plt.plot(com_state[0, :N], com_state[1, :N], color='green', label="CoM XY")
+            plt.plot(cop[0, :], cop[1, :], color='blue', label="CoP XY")
+            plt.scatter(foot_steps[0, :], foot_steps[1, :], facecolors='none', edgecolors='black', label="footholds")
+            plt.scatter(foot_steps[2, :], foot_steps[3, :], facecolors='red', edgecolors='black')
+            plt.xlabel('X [m]')
+            plt.ylabel('Y [m]')
+            plt.axis('equal')
+            plt.legend()
+            plt.grid(True)
+            plt.pause(0.001)
+
+
+        # TSID whole-body controller, initialized with the current (standing) robot state
+        p.updateKinematics()
+        tsid_quadruped = TsidQuadruped(com_optim_conf, p.configuration.copy(), p.gen_velocities.copy())
+        foot_swing_thresh = 1e-4  # foot z-reference above this -> foot is swinging
+
+        counter = 0
+        p.pid.setPDs(0, 0,0 )
+
+
+        print(colored(f"Starting main loop  T =  {p.time}", "blue"))
         while not ros.is_shutdown():
             p.updateKinematics()
             if p.gracefulCollapseFlag:
                 if p.gracefulCollapse():
                     break
             if use_joy:
-                axes, buttons = joy.get_commands()
-                # use a scaling to make the joy input less reactive
-                long_x = 0.2 * axes[0]
-                long_y = 0.2 * axes[1]
-                rot_z = 0.3 * axes[2]
+                long_x, long_y, rot_z, buttons = joy.getVelocityReferences()
                 # safety layer
                 if buttons[0] and not p.gracefulCollapseFlag:
                     print(colored("start Graceful collapse", "red"))
@@ -1310,14 +1217,12 @@ if __name__ == '__main__':
                     p.deregister_node()
                     break
 
-
-            if rl_control != 'none' and (p.time > (p.startTime + 3.)):
+            #p.applyForce(0, 100, 0, 0, 0, 0, 0.25)
+            if rl_control != 'none' and (p.time > (p.startTime + 1.)):
                 if use_joy:
                     rl_controller.velocity_cmd = np.array([long_x, long_y, rot_z])
                 else:
-                    # send random vel every 3 sec btwn -0.4 and 0.4 m/s for x and y, and -0.4 and 0.4 rad/s for rotation
-                    if p.time > (p.startTime + 3.0) and p.time % 3.0 == 0:
-                        rl_controller.velocity_cmd = np.random.uniform(low=-0.4, high=0.4, size=(3,))
+                    rl_controller.velocity_cmd = np.random.uniform(low=-0.4, high=0.4, size=(3,))
                         
                 p.baseTwistW_des[:3] = p.b_R_w.T @ np.append(rl_controller.velocity_cmd[:2], 0.0)
                 p.baseTwistW_des[5] = rl_controller.velocity_cmd[2]
@@ -1340,28 +1245,69 @@ if __name__ == '__main__':
 
                     p.rl_q_des = rl_controller.action(lin_acc_b, lin_vel_b, ang_vel_b, proj_gravity, p.q, p.qd, policy_type="default")
 
-                if rl_control == 'sensor_based':
-                    h_R_b = p.math_utils.eul2Rot(np.array([p.euler[0],p.euler[1],0.]))
-                    p.rl_q_des =  rl_controller.compute_control(h_R_b=h_R_b,
-                                                             joints_pos=p.q,
-                                                             joints_vel=p.qd,
-                                                             ref_base_lin_vel=np.array([rl_controller.velocity_cmd[0], rl_controller.velocity_cmd[1], 0.]),
-                                                             ref_base_ang_vel=np.array([0., 0., rl_controller.velocity_cmd[2]]),
-                                                             imu_linear_acceleration=p.baseLinAccB,
-                                                             imu_angular_velocity= p.b_R_w @ p.baseTwistW[3:],
-                                                             imu_orientation=np.array([p.quaternion[3],p.quaternion[0],p.quaternion[1],p.quaternion[2]]))
                 #switch off wbc
                 p.grForcesW_des = np.zeros((12))
                 p.tau_ffwd = np.zeros(12)
                 p.send_command(p.rl_q_des, np.zeros(12), np.zeros(12), log_data_in_send_command=True)
             else:
+
                 if generate_reference:
                     p.q_des, p.qd_des, p.tau_ffwd, p.basePoseW_des, p.baseTwistW_des = p.ref_gen.generateReference(p.time)
                 else:
-                    p.tau_ffwd, p.grForcesW_des = p.wbc.gravityCompensationBase(p.B_contacts,
-                                                                                p.wJ,
-                                                                                p.h_joints,
-                                                                                p.comPoseW)
+                    ####################
+                    # get reference from optimization trajectory interpolated
+                    #########################
+                    idx = min(counter, com_ref.shape[1] - 1)
+                    p.comPoseW_des[:3] = com_ref[:, idx]
+                    p.comTwistW_des[:3] = dcom_ref[:, idx]
+
+
+                    # cop_ref
+                    #plot desired cop
+                    p.cop_des = cop_ref[:, idx]
+                    p.ros_pub.add_marker(np.concatenate((p.cop_des, [0])), radius=0.1, color="red")
+                    # plot actual cop
+                    p.cop_act = p.computeCoP()
+                    p.ros_pub.add_marker(np.concatenate((p.cop_act,  [0])), radius=0.1, color="blue")
+
+                    if counter < com_ref.shape[1] - 1:
+                        counter += 1
+
+                    #####################################
+                    # TSID whole-body controller (CoM task + swing-foot tasks + point contacts)
+                    #####################################
+                    tsid_quadruped.set_com_ref(com_ref[:, idx], dcom_ref[:, idx], ddcom_ref[:, idx])
+
+
+                    for foot_name in com_optim_conf.ee_frames:
+                        leg = p.u.leg_map[foot_name[:2].upper()]
+                        # feed the planned foot trajectory into the des-foot log (plotContacts), since
+                        # this walking loop never otherwise touches p.W_contacts_des during locomotion
+                        p.W_contacts_des[leg] = x_ref[foot_name][:, idx]
+                        #planned liftoff
+                        is_swinging = x_ref[foot_name][2, idx] > foot_swing_thresh
+                        if is_swinging:
+                            tsid_quadruped.remove_contact(foot_name, transition_time=com_optim_conf.contact_transition_time)
+                        # haptic touchdown
+                        elif p.contact_state[leg]:
+                            # plan says stance, but only rigidify the contact once the
+                            # foot is actually sensed on the ground (avoids commanding a
+                            # ground reaction force at a foot that hasn't touched down yet)
+                            tsid_quadruped.add_contact(foot_name)
+                        tsid_quadruped.set_foot_3d_ref(foot_name, x_ref[foot_name][:, idx],
+                                                        dx_ref[foot_name][:, idx], ddx_ref[foot_name][:, idx])
+
+                    HQPData = tsid_quadruped.compute_problem(float(p.time), p.configuration, p.gen_velocities)
+                    sol = tsid_quadruped.solve(HQPData)
+                    if sol.status != 0:
+                        print(colored(f"QP problem could not be solved! Error code: {sol.status}", "red"))
+                    else:
+                        p.tau_ffwd = tsid_quadruped.get_torques(sol)
+                        for foot_name in com_optim_conf.ee_frames:
+                            leg = p.u.leg_map[foot_name[:2].upper()]
+                            p.u.setLegJointState(leg, tsid_quadruped.get_contact_force(foot_name, sol), p.grForcesW_des)
+
+
                 p.send_command(p.q_des, p.qd_des, p.alphaCollapse*p.tau_ffwd, log_data_in_send_command=True)
 
             p.visualizeContacts()
@@ -1371,13 +1317,39 @@ if __name__ == '__main__':
             p.recorder.stop_recording_srv()
         ros.signal_shutdown("killed")
         p.deregister_node()
-        
+    except Exception:
+        # don't let an unexpected crash (e.g. TSID/pinocchio failing on a
+        # degenerate configuration when the robot falls) skip the final plots
+        traceback.print_exc()
+
     if conf.plotting:
         plotJoint('position', time_log=p.time_log, q_log=p.q_log, q_des_log=p.q_des_log, sharex=True, sharey=False,
                   start=0, end=-1)
-        plotFrame('position', time_log=p.time_log, des_Pose_log=p.basePoseW_des_log, Pose_log=p.basePoseW_log,
-                  title='Base', frame='W', sharex=True, sharey=False, start=0, end=-1)
-        plotFrame('velocity', time_log=p.time_log, des_Twist_log=p.baseTwistW_des_log, Twist_log=p.baseTwistW_log,
-                  title='Base', frame='W', sharex=True, sharey=False, start=0, end=-1)
+        #plotJoint('torque', time_log=p.time_log, tau_des_log=p.tau_ffwd_log)
+        plotFrame('position', time_log=p.time_log, des_Pose_log=p.comPoseW_des_log, Pose_log=p.comPoseW_log,
+                  title='CoM', frame='W', sharex=True, sharey=False, start=0, end=-1)
+        plotFrame('velocity', time_log=p.time_log, des_Twist_log=p.comTwistW_des_log, Twist_log=p.comTwistW_log,
+                  title='CoM', frame='W', sharex=True, sharey=False, start=0, end=-1)
+        plotContacts('position', time_log=p.time_log, des_LinPose_log=p.W_contacts_des_log, LinPose_log=p.W_contacts_log,
+                      frame='W', title='Feet position and contact state')
+
+        fig = plt.figure()
+        fig.suptitle('CoM and CoP XY tracking', fontsize=20)
+        plt.plot(p.comPoseW_des_log[0, :], p.comPoseW_des_log[1, :], color='green', lw=2, label='CoM des')
+        plt.plot(p.comPoseW_log[0, :], p.comPoseW_log[1, :], color='green', linestyle='-',  lw=1, label='CoM act')
+        plt.plot(p.cop_des_log[0, :], p.cop_des_log[1, :], color='blue', lw=2, label='CoP des')
+        plt.plot(p.cop_log[0, :], p.cop_log[1, :], color='blue', linestyle='-', lw=1, label='CoP act')
+        plt.scatter(foot_steps[0, :], foot_steps[1, :], facecolors='none', edgecolors='black', label='footholds')
+        plt.scatter(foot_steps[2, :], foot_steps[3, :], facecolors='none', edgecolors='black')
+        plt.xlabel('X [m]')
+        plt.ylabel('Y [m]')
+        plt.axis('equal')
+        plt.legend()
+        plt.grid(True)
+        plt.ion()
+        plt.show()
+
+
+
     if p.SAVE_BAG:
         p.recorder.stop_recording_srv()
