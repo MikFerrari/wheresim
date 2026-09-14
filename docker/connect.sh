@@ -1,0 +1,1 @@
+docker exec -it where2026 /bin/bash

@@ -13,6 +13,18 @@ class RobotWrapper(PinocchioRobotWrapper):
     
     @staticmethod
     def BuildFromURDF(filename, package_dirs=None, root_joint=None, verbose=False, meshLoader=None):
+        if package_dirs is None:
+            import os
+            locosim_dir = os.environ.get('LOCOSIM_DIR', '/root/ros_ws/src/wheresim')
+            ros_pkg_path = os.environ.get('ROS_PACKAGE_PATH', '')
+            package_dirs = [p for p in ros_pkg_path.split(':') if p]
+            if locosim_dir:
+                desc_path = os.path.join(locosim_dir, 'robot_descriptions')
+                hw_path = os.path.join(locosim_dir, 'robot_hardware_interfaces')
+                if desc_path not in package_dirs:
+                    package_dirs.insert(0, desc_path)
+                if hw_path not in package_dirs:
+                    package_dirs.insert(1, hw_path)
         robot = RobotWrapper()
         robot.initFromURDF(filename, package_dirs, root_joint, verbose, meshLoader)
         #additional var
