@@ -98,6 +98,10 @@ RUN pip3 install --no-cache-dir cvxpy==1.2.0 shapely quadprog
 # -----------------------------
 # robotpkg (Focal → py38)
 # -----------------------------
+RUN echo "deb [arch=amd64] http://robotpkg.openrobots.org/packages/debian/pub focal robotpkg" > /etc/apt/sources.list.d/robotpkg.list \
+ && echo "deb [arch=amd64] http://robotpkg.openrobots.org/wip/packages/debian/pub focal robotpkg" >> /etc/apt/sources.list.d/robotpkg.list \
+ && curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.key | apt-key add -
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-noetic-eigenpy \
     ros-noetic-pinocchio \
@@ -134,7 +138,7 @@ RUN pip3 install line_profiler
 
 
 #TSID
-RUN apt-get update && apt-get install -y  ros-noetic-tsid
+RUN apt-get update && apt-get install -y ros-noetic-tsid
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -161,6 +165,10 @@ RUN pip3 install --no-cache-dir   robot_descriptions
 RUN python3 -m pip install --no-cache-dir \
       notebook \
       ipywidgets \
+      "numpy<1.24" \
+      onnxruntime \
+      torch==2.0.0+cpu \
+      --extra-index-url https://download.pytorch.org/whl/cpu \
  && rm -rf /var/lib/apt/lists/*
 
 #joy node
@@ -197,7 +205,7 @@ RUN echo '#!/bin/bash' >> /etc/bash.bashrc && \
     echo 'export ROS_HOSTNAME=localhost' >> /etc/bash.bashrc && \
     echo 'export ROS_PACKAGE_PATH=$LOCOSIM_DIR/robot_descriptions:$LOCOSIM_DIR/robot_hardware_interfaces:$ROS_PACKAGE_PATH:/opt/openrobots/share/' >> /etc/bash.bashrc && \
     echo 'export GAZEBO_SUPPRESS_EOL_WARNING=1' >> /etc/bash.bashrc && \
-    echo 'export PYTHONPATH=/opt/ros/noetic/lib/python3.8/site-packages:$LOCOSIM_DIR/robot_control:$PYTHONPATH' >> /etc/bash.bashrc && \
+    echo 'export PYTHONPATH=/opt/openrobots/lib/python3.8/site-packages:/opt/ros/noetic/lib/python3.8/site-packages:$LOCOSIM_DIR/robot_control:$PYTHONPATH' >> /etc/bash.bashrc && \
     echo 'alias pycharm='\''/root/pycharm/bin/pycharm.sh'\''' >> /etc/bash.bashrc
 RUN chmod +x /etc/bash.bashrc
 
